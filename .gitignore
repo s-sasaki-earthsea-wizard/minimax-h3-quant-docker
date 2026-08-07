@@ -1,0 +1,22 @@
+# Local configuration. Copied from .env.example by `make`; holds this machine's
+# uid/gid and whatever tuning flags are currently in flight.
+/.env
+
+# Bind-mounted ComfyUI checkout (managed by `make checkout`)
+/ComfyUI/
+
+# Weights, generated media, runtime state. Ignore every file under /data, then
+# re-include the directories that make up the skeleton plus their .gitkeep
+# markers -- git will not descend into an excluded directory, so each level has
+# to be re-included explicitly for the .gitkeep inside it to survive.
+/data/**
+!/data/models/
+!/data/models/diffusion_models/
+!/data/models/text_encoders/
+!/data/models/vae/
+!/data/custom_nodes/
+!/data/input/
+!/data/output/
+!/data/temp/
+!/data/user/
+!/data/**/.gitkeep
