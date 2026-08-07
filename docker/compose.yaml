@@ -1,0 +1,72 @@
+name: minimax-h3-quant-docker
+
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        COMFYUI_REF: ${COMFYUI_REF:-v0.30.2}
+        TORCH_VERSION: ${TORCH_VERSION:-2.12.0}
+        HOST_UID: ${HOST_UID:-1000}
+        HOST_GID: ${HOST_GID:-1000}
+    image: minimax-h3-quant-docker/comfyui:${COMFYUI_REF:-v0.30.2}
+    container_name: minimax-h3-quant-docker
+
+    gpus: all
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      HF_HOME: /data/.cache/huggingface
+      # hf_transfer is retired; Xet is the current high-throughput path.
+      HF_XET_HIGH_PERFORMANCE: "1"
+      # Blackwell sm_120 for any Triton/JIT kernel compiled at runtime.
+      TORCH_CUDA_ARCH_LIST: "12.0"
+
+    ports:
+      - "${COMFY_PORT:-8188}:8188"
+
+    volumes:
+      # ComfyUI source: host-owned git checkout, so `git pull` works normally.
+      - ../ComfyUI:/opt/ComfyUI
+      # Everything stateful: models, custom_nodes, input, output, user, temp.
+      - ../data:/data
+
+    working_dir: /opt/ComfyUI
+
+    # Weight streaming pushes a lot through shared memory / dataloader workers.
+    shm_size: "8gb"
+    ipc: host
+
+    # --disable-pinned-memory: measured 45.4 GiB -> 6.1 GiB system RAM with no
+    #   speed penalty on this class of machine.
+    # --fast-disk: prefer disk-backed offload over unpinned RAM. Worth it here
+    #   because ~/ is on NVMe measured at 3.0 GB/s.
+    # NOTE: --use-sage-attention is deliberately NOT set. A code-path omission in
+    #   the MiniMax implementation can produce noise output when SageAttention is
+    #   forced globally. Use the KJNodes "MiniMax H3 Memory Efficient Sage
+    #   Attention Patch" node inside the workflow instead.
+    # --database-url is set explicitly because it does NOT follow
+    #   --base-directory: cli_args.py derives it from its own __file__, landing
+    #   on /opt/ComfyUI/user/comfyui.db, a directory the git checkout does not
+    #   contain. Left alone it fails with "unable to open database file".
+    command: >
+      python main.py
+      --listen 0.0.0.0
+      --port 8188
+      --base-directory /data
+      --database-url sqlite:////data/user/comfyui.db
+      --disable-pinned-memory
+      --fast-disk
+      ${COMFY_EXTRA_ARGS:-}
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8188/system_stats || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+    # Manual lifecycle: this holds a GPU, so it should not come back on reboot
+    # unless asked. Change to "unless-stopped" if you want it always up.
+    restart: "no"
+    stop_grace_period: 30s
