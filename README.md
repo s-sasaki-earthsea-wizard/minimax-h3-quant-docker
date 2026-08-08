@@ -3,6 +3,9 @@
 Run MiniMax-H3's **quantised** weights on a **single 16 GB consumer GPU**, in a
 Docker container that leaves the host Python environment untouched.
 
+Verified here up to **864×480, 736 frames (30.7 s at 24 fps), with synchronised
+audio**, on one RTX 5080 — against an upstream deployment that assumes four GPUs.
+
 `make setup && make models && make up` — that is the whole thing.
 
 ## Why this exists
@@ -126,18 +129,61 @@ From ComfyUI-KJNodes:
 - `MiniMax H3 Chunk FeedForward` — chunks the SwiGLU FFN over the packed token dim
 - `MiniMax H3 Low VRAM Attention` — chunks attention over heads
 
-The SageAttention patch combined with `EasyCache` was measured at ~2.46× speedup.
+The SageAttention patch combined with `EasyCache` is reported at ~2.46× speedup.
+**None of these are wired into the workflow used for the runs below** — those are
+the unaccelerated baseline, so the headroom is still on the table.
 
-## Expected performance
+## Frame counts are quantised to 17k + 5
 
-Reference figures from comparable 16 GB Blackwell hardware:
+The video VAE compresses 17 frames per latent, so a request only lands on a whole
+number of latents at `17k + 5` frames — 56, 124, 243, 362, 481, 736. The official
+template hides this behind a `ComfyMathExpression` that rounds a duration in
+seconds up to the next valid count:
+
+```text
+max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17
+```
+
+Drive the duration through that expression rather than typing a frame count into
+`MiniMaxH3ImageToVideo` directly.
+
+## Performance
+
+### Measured here
+
+21 generations on the reference machine below, all 864×480 (0.4 MP, 16:9,
+multiple of 32) at 24 fps with audio, `res_multistep` / `simple` / 20 steps, and
+**no acceleration nodes**:
+
+| Frames | Duration | Wall-clock upper bound | Implied |
+|---|---|---|---|
+| 124 | 5.2 s | ≤ 7.5 min | 3.6 s/frame |
+| 243 | 10.1 s | ≤ 15.0 min | 3.7 s/frame |
+| 362 | 15.1 s | ≤ 28.1 min | 4.7 s/frame |
+| 481 | 20.0 s | ≤ 25.7 min | 3.2 s/frame |
+| 736 | 30.7 s | ≤ 46.9 min | 3.8 s/frame |
+
+These are **upper bounds**, not measurements: they are the shortest interval
+between consecutive output files of the same configuration, so each still
+includes whatever time was spent editing the prompt in between. The consistency
+of the implied per-frame cost (3.2–4.7 s) suggests the idle component is small
+and that cost scales roughly linearly with frame count, but the authoritative
+figures — `Prompt executed in ... seconds` and the VRAM peak — have not been
+captured yet.
+
+### Reference figures
+
+From comparable 16 GB Blackwell hardware, for the acceleration this repo has not
+yet enabled:
 
 | Job | Time |
 |---|---|
 | 960×540, 5 s, 20 steps | ~182 s |
 | 640×480, 736 frames, 20 steps | ~10 min (optimised) vs ~31 min (not) |
 
-Peak VRAM measured at 12.2–15.3 GiB.
+Peak VRAM reported at 12.2–15.3 GiB. Scaling that unoptimised 31 min by the
+864×480 / 640×480 pixel ratio gives ~42 min, which the 46.9 min bound above is
+consistent with.
 
 ## Bring-up order
 
