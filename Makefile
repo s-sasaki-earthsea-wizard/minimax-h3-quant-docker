@@ -13,6 +13,10 @@ COMFY_PORT := $(call env_get,COMFY_PORT)
 
 .DEFAULT_GOAL := help
 
+# Headless generation defaults (override per-invocation: make gen DURATION=10)
+DURATION ?= 5
+MODEL ?= hf.co/TrevorJS/gemma-4-26B-A4B-it-uncensored-GGUF:Q4_K_M
+
 # Materialise .env on first use, with this machine's uid/gid rather than the
 # 1000/1000 placeholder -- the container user is created from them, so a
 # mismatch leaves bind-mounted files unwritable. The prerequisite is order-only
@@ -89,6 +93,19 @@ shell: | .env ## Open a bash shell in the container
 doctor: | .env ## Verify GPU / torch / quantization path / nodes from inside the container
 	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
 		--entrypoint python comfyui /scripts/doctor.py
+
+.PHONY: gen
+gen: | .env ## Headless video: make gen PROMPT="..." [DURATION=5] [SEED=n]
+	@test -n "$(PROMPT)" || { echo 'usage: make gen PROMPT="..." [DURATION=5] [SEED=n]'; exit 1; }
+	python3 scripts/generate.py --prompt "$(PROMPT)" --duration "$(DURATION)" \
+		$(if $(SEED),--seed "$(SEED)") --server "http://localhost:$(COMFY_PORT)"
+
+.PHONY: pipeline
+pipeline: | .env ## Ollama -> video: make pipeline THEME="..." [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]
+	@test -n "$(THEME)" || { echo 'usage: make pipeline THEME="..." [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
+	python3 scripts/pipeline.py "$(THEME)" --model "$(MODEL)" --duration "$(DURATION)" \
+		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
+		--comfy-server "http://localhost:$(COMFY_PORT)"
 
 .PHONY: nvidia-smi
 nvidia-smi: ## Show GPU usage

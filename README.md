@@ -53,7 +53,12 @@ minimax-h3-quant-docker/
 │   └── compose.yaml
 ├── scripts/
 │   ├── download_models.sh
-│   └── doctor.py         stack verification, run by `make doctor`
+│   ├── doctor.py         stack verification, run by `make doctor`
+│   ├── generate.py       headless generation via the ComfyUI API (`make gen`)
+│   ├── prompt_gen.py     theme -> prompts via a local Ollama model
+│   └── pipeline.py       theme -> Ollama -> MiniMax-H3 (`make pipeline`)
+├── templates/
+│   └── video_minimax_h3_t2v_headless.json   API-format t2v workflow
 ├── ComfyUI/              git checkout, bind-mounted to /opt/ComfyUI
 └── data/                 bind-mounted to /data (--base-directory)
     ├── models/{diffusion_models,text_encoders,vae}
@@ -77,6 +82,39 @@ make up        # http://localhost:8188
 make logs
 make down
 ```
+
+Headless (no browser, server must be up):
+
+```bash
+make gen PROMPT="..." DURATION=5            # your prompt -> video
+make pipeline THEME="..." DURATION=5        # theme -> Ollama prompt -> video
+make pipeline THEME="..." DRY_RUN=1         # prompts only, review before spending GPU time
+```
+
+## Headless generation
+
+The browser UI is only a client: it assembles a workflow JSON and POSTs it to
+the server. `scripts/generate.py` (stdlib only) does the same against
+`templates/video_minimax_h3_t2v_headless.json`, an API-format export of the
+t2v workflow:
+
+- Nodes are located by `class_type`, not node id, so re-exporting the
+  template does not break the script.
+- The duration is passed in **seconds**; the `ComfyMathExpression` node stays
+  in the workflow, so the [17k + 5 frame quantisation](#frame-counts-are-quantised-to-17k--5)
+  is still enforced server-side.
+- Jobs POSTed to `/prompt` queue server-side and run sequentially, so batch
+  submission needs no extra logic.
+
+`scripts/pipeline.py` chains a local LLM in front of it: a theme goes to
+Ollama (`make pipeline MODEL=...` to pick any `ollama list` entry), which
+returns **both** a still-image prompt (reserved for a future i2v stage) and a
+video prompt in one schema-constrained call, so the two stay consistent. The
+request sets `keep_alive: 0`, unloading the LLM from VRAM before ComfyUI
+starts; the pipeline is strictly sequential, so the models never contend.
+Generated prompts are saved to `data/output/prompts/` next to the videos for
+side-by-side review. Requires Ollama running on the host (default
+`http://localhost:11434`).
 
 ## Configuration
 
