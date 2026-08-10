@@ -2,6 +2,9 @@
 # uid/gid and whatever tuning flags are currently in flight.
 /.env
 
+# Python bytecode caches
+__pycache__/
+
 # Bind-mounted ComfyUI checkout (managed by `make checkout`)
 /ComfyUI/
 
