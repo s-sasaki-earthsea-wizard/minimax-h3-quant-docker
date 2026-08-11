@@ -33,7 +33,7 @@ DEFAULT_I2V_THEME = ("Bring the opening frame to life with subtle, natural "
 
 
 def save_prompts(theme, result, model, duration_s, seed,
-                 image=None, image_prompt=None):
+                 image=None, image_prompt=None, speech=None):
     """Write the generated prompts (plus metadata) for later review.
 
     Args:
@@ -41,6 +41,7 @@ def save_prompts(theme, result, model, duration_s, seed,
         image_prompt: the description of that frame handed to the LLM. Kept
             under its own key so it is never confused with the still-image
             prompt the model *writes* in t2v runs.
+        speech: the resolved dialogue language the run asked for, if any.
     """
     PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -50,6 +51,7 @@ def save_prompts(theme, result, model, duration_s, seed,
         "model": model,
         "duration_s": duration_s,
         "seed": seed,
+        "speech": speech,
         "first_frame": str(image) if image else None,
         "first_frame_prompt": image_prompt,
         **result,
@@ -66,6 +68,7 @@ def main():
                         help="still to use as the clip's first frame; "
                              "switches the whole run to i2v")
     prompt_gen.add_image_prompt_arguments(parser)
+    prompt_gen.add_speech_argument(parser)
     parser.add_argument("--model", default=prompt_gen.DEFAULT_MODEL,
                         help=f"Ollama model (default: {prompt_gen.DEFAULT_MODEL})")
     parser.add_argument("--duration", type=float, default=5.0,
@@ -103,14 +106,20 @@ def main():
               "--image-prompt; it will still be the first frame, but the LLM "
               "writes without seeing it", file=sys.stderr)
 
+    speech = prompt_gen.resolve_speech(args.speech)
     mode = "i2v" if image_prompt else "t2v"
+    if speech:
+        mode += f", {speech} speech"
+    elif speech == "":
+        mode += ", no speech"
     print(f"[1/2] generating prompts with {args.model} ({mode}) ...",
           flush=True)
     t0 = time.monotonic()
     result = prompt_gen.generate_prompts(
         theme, args.duration, model=args.model,
         server=args.ollama_server, temperature=args.temperature,
-        image_prompt=image_prompt)
+        image_prompt=image_prompt, speech=speech,
+        first_frame=bool(args.image))
     print(f"      done in {time.monotonic() - t0:.1f}s")
     if image_prompt:
         print("\n--- first frame (given to the LLM) ---")
@@ -124,7 +133,7 @@ def main():
 
     prompts_path = save_prompts(theme, result, args.model,
                                 args.duration, seed, image=args.image,
-                                image_prompt=image_prompt)
+                                image_prompt=image_prompt, speech=speech)
     print(f"prompts saved: {prompts_path.relative_to(generate.REPO_ROOT)}")
 
     if args.dry_run:
