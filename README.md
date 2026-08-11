@@ -55,11 +55,14 @@ minimax-h3-quant-docker/
 │   ├── download_models.sh
 │   ├── doctor.py         stack verification, run by `make doctor`
 │   ├── generate.py       headless generation via the ComfyUI API (`make gen`)
+│   ├── image_meta.py     size / aspect / embedded prompt of a still, stdlib only
 │   ├── prompt_gen.py     theme -> prompts via a local Ollama model
-│   └── pipeline.py       theme -> Ollama -> MiniMax-H3 (`make pipeline`)
+│   └── pipeline.py       theme (+ still) -> Ollama -> MiniMax-H3 (`make pipeline`)
 ├── templates/
 │   ├── video_minimax_h3_t2v_headless.json         API-format t2v workflow (baseline)
-│   └── video_minimax_h3_t2v_headless_accel.json   + SageAttention patch + EasyCache (default)
+│   ├── video_minimax_h3_t2v_headless_accel.json   + SageAttention patch + EasyCache (default)
+│   ├── video_minimax_h3_i2v_headless.json         same, with a LoadImage -> first_frame
+│   └── video_minimax_h3_i2v_headless_accel.json   + SageAttention patch + EasyCache (default)
 ├── ComfyUI/              git checkout, bind-mounted to /opt/ComfyUI
 └── data/                 bind-mounted to /data (--base-directory)
     ├── models/{diffusion_models,text_encoders,vae}
@@ -90,15 +93,20 @@ Headless (no browser, server must be up):
 make gen PROMPT="..." DURATION=5            # your prompt -> video
 make pipeline THEME="..." DURATION=5        # theme -> Ollama prompt -> video
 make pipeline THEME="..." DRY_RUN=1         # prompts only, review before spending GPU time
+
+make gen PROMPT="..." IMAGE=data/input/still.png       # still -> video
+make pipeline IMAGE=data/input/still.png               # still -> Ollama prompt -> video
+make pipeline IMAGE=... THEME="..." DRY_RUN=1          # steer it, review the prompt first
 ```
 
 ## Headless generation
 
 The browser UI is only a client: it assembles a workflow JSON and POSTs it to
 the server. `scripts/generate.py` (stdlib only) does the same against an
-API-format export of the t2v workflow — by default the accelerated
-`templates/video_minimax_h3_t2v_headless_accel.json` (SageAttention patch +
-EasyCache, [measured ~2.1×](#measured-here) at visually equal quality); pass
+API-format export of the workflow — by default the accelerated
+`templates/video_minimax_h3_t2v_headless_accel.json`, or its i2v counterpart
+when `--image` is given (both carry the SageAttention patch + EasyCache,
+[measured ~2.1×](#measured-here) at visually equal quality). Pass
 `--template templates/video_minimax_h3_t2v_headless.json` for the
 unaccelerated baseline:
 
@@ -110,11 +118,41 @@ unaccelerated baseline:
 - Jobs POSTed to `/prompt` queue server-side and run sequentially, so batch
   submission needs no extra logic.
 
+### Image to video
+
+`--image path/to/still.png` (`make gen IMAGE=...`) selects the i2v template and
+writes the still into its `LoadImage` node. Two details the script settles on
+your behalf:
+
+- **Aspect ratio.** `MiniMaxH3ImageToVideo` stretches `first_frame` onto the
+  canvas with the upscale method *disabled*, so a canvas that disagrees with
+  the still visibly distorts the opening frame. The `ResolutionSelector` aspect
+  ratio is therefore matched to the image's own dimensions unless `--aspect`
+  overrides it; the megapixel target is left alone.
+- **Where the file lives.** `data/` is bind-mounted at `/data` and ComfyUI runs
+  with `--base-directory /data`, so a still already under `data/input/` is
+  addressed by name alone. Anything elsewhere is POSTed to `/upload/image`
+  first, which also lets the script drive a ComfyUI that does not share this
+  filesystem.
+
+### LLM-driven prompts
+
 `scripts/pipeline.py` chains a local LLM in front of it: a theme goes to
-Ollama (`make pipeline MODEL=...` to pick any `ollama list` entry), which
-returns **both** a still-image prompt (reserved for a future i2v stage) and a
-video prompt in one schema-constrained call, so the two stay consistent. The
-request sets `keep_alive: 0`, unloading the LLM from VRAM before ComfyUI
+Ollama (`make pipeline MODEL=...` to pick any `ollama list` entry) in one
+schema-constrained call. In t2v mode it returns **both** a still-image prompt
+and a video prompt, so the two stay consistent.
+
+In i2v mode the opening frame already exists, so the description travels the
+other way — into the LLM. It comes from `--image-prompt`, `--image-prompt-file`
+or, by default, the generation prompt the image generator left in the PNG's
+`parameters` text chunk, parsed straight out of the file by
+`scripts/image_meta.py` (no Pillow). The model is told the frame is fixed, that
+shot 1 must open on it, and that the frame's art style rules the clip — an
+illustrated still stays an illustration instead of drifting to live action.
+With `--image` the theme itself is optional; omit it and the LLM is simply
+asked to bring the frame to life.
+
+The request sets `keep_alive: 0`, unloading the LLM from VRAM before ComfyUI
 starts; the pipeline is strictly sequential, so the models never contend.
 Generated prompts are saved to `data/output/prompts/` next to the videos for
 side-by-side review. Requires Ollama running on the host (default
