@@ -8,6 +8,7 @@ services:
       args:
         COMFYUI_REF: ${COMFYUI_REF:-v0.30.2}
         TORCH_VERSION: ${TORCH_VERSION:-2.12.0}
+        SAGEATTENTION_REF: ${SAGEATTENTION_REF:-d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5}
         HOST_UID: ${HOST_UID:-1000}
         HOST_GID: ${HOST_GID:-1000}
     image: minimax-h3-quant-docker/comfyui:${COMFYUI_REF:-v0.30.2}

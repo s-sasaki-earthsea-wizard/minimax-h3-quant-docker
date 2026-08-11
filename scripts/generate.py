@@ -28,7 +28,11 @@ import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TEMPLATE = REPO_ROOT / "templates" / "video_minimax_h3_t2v_headless.json"
+# The accelerated template (SageAttention patch + EasyCache, measured ~2.1x at
+# equal quality) is the default; pass --template to run the unaccelerated
+# baseline in templates/video_minimax_h3_t2v_headless.json for A/B comparisons.
+DEFAULT_TEMPLATE = (REPO_ROOT / "templates"
+                    / "video_minimax_h3_t2v_headless_accel.json")
 DEFAULT_SERVER = "http://localhost:8188"
 POLL_INTERVAL_S = 5
 PROGRESS_EVERY_S = 60

@@ -58,7 +58,8 @@ minimax-h3-quant-docker/
 │   ├── prompt_gen.py     theme -> prompts via a local Ollama model
 │   └── pipeline.py       theme -> Ollama -> MiniMax-H3 (`make pipeline`)
 ├── templates/
-│   └── video_minimax_h3_t2v_headless.json   API-format t2v workflow
+│   ├── video_minimax_h3_t2v_headless.json         API-format t2v workflow (baseline)
+│   └── video_minimax_h3_t2v_headless_accel.json   + SageAttention patch + EasyCache (default)
 ├── ComfyUI/              git checkout, bind-mounted to /opt/ComfyUI
 └── data/                 bind-mounted to /data (--base-directory)
     ├── models/{diffusion_models,text_encoders,vae}
@@ -94,9 +95,12 @@ make pipeline THEME="..." DRY_RUN=1         # prompts only, review before spendi
 ## Headless generation
 
 The browser UI is only a client: it assembles a workflow JSON and POSTs it to
-the server. `scripts/generate.py` (stdlib only) does the same against
-`templates/video_minimax_h3_t2v_headless.json`, an API-format export of the
-t2v workflow:
+the server. `scripts/generate.py` (stdlib only) does the same against an
+API-format export of the t2v workflow — by default the accelerated
+`templates/video_minimax_h3_t2v_headless_accel.json` (SageAttention patch +
+EasyCache, [measured ~2.1×](#measured-here) at visually equal quality); pass
+`--template templates/video_minimax_h3_t2v_headless.json` for the
+unaccelerated baseline:
 
 - Nodes are located by `class_type`, not node id, so re-exporting the
   template does not break the script.
@@ -129,6 +133,7 @@ leaves everything written into `data/` unwritable. Edit `.env` afterwards;
 |---|---|---|
 | `COMFYUI_REF` | `v0.30.2` | ComfyUI tag to check out and to pin the image's requirements against |
 | `TORCH_VERSION` | `2.12.0` | Installed from the cu130 index |
+| `SAGEATTENTION_REF` | `d1a57a5...` | thu-ml/SageAttention commit compiled into the image |
 | `HOST_UID` / `HOST_GID` | your `id -u` / `id -g` | Ownership of bind-mounted files |
 | `COMFY_PORT` | `8188` | Host-side port |
 | `COMFY_EXTRA_ARGS` | *(empty)* | Appended verbatim to the ComfyUI command line; see [Bring-up order](#bring-up-order) |
@@ -139,8 +144,8 @@ leaves everything written into `data/` unwritable. Edit `.env` afterwards;
 |---|---|---|
 | ComfyUI | `v0.30.2` | `comfy_extras/nodes_minimax_h3.py` and `nodes_easycache.py` are native from 0.30.0 |
 | PyTorch | `2.12.0+cu130` | Matches the validated 16 GB Blackwell reference stack; the host's 2.10+cu128 is untested for the NVFP4 dequant path |
-| CUDA base | `13.0.1-cudnn-devel` | `devel` so Triton/JIT kernels can build for sm_120 |
-| SageAttention | `1.0.6` | Triton-based, no nvcc build step |
+| CUDA base | `13.0.1-cudnn-devel` | `devel` so nvcc can compile SageAttention and Triton/JIT kernels for sm_120 |
+| SageAttention | source @ `d1a57a5` (2.2.0) | The PyPI 1.0.6 release lacks the int8/fp8 kernels the KJNodes MiniMax patch imports — the node registers but fails at execution. Built from source for sm_120 only (~106 s) |
 
 ## Runtime flags
 
@@ -167,9 +172,11 @@ From ComfyUI-KJNodes:
 - `MiniMax H3 Chunk FeedForward` — chunks the SwiGLU FFN over the packed token dim
 - `MiniMax H3 Low VRAM Attention` — chunks attention over heads
 
-The SageAttention patch combined with `EasyCache` is reported at ~2.46× speedup.
-**None of these are wired into the workflow used for the runs below** — those are
-the unaccelerated baseline, so the headroom is still on the table.
+The SageAttention patch and `EasyCache` are wired into the default headless
+template and [measured here at ~2.1×](#measured-here) on 124 frames, with no
+VRAM penalty and no visible quality difference on same-seed pairs. The two
+chunking nodes remain unused: peak VRAM is unchanged by the patch, so there is
+nothing for them to buy yet.
 
 ## Frame counts are quantised to 17k + 5
 
@@ -189,9 +196,32 @@ Drive the duration through that expression rather than typing a frame count into
 
 ### Measured here
 
-21 generations on the reference machine below, all 864×480 (0.4 MP, 16:9,
-multiple of 32) at 24 fps with audio, `res_multistep` / `simple` / 20 steps, and
-**no acceleration nodes**:
+**Acceleration A/B** — same image, same container, same prompt, same seed;
+only the template differs. 864×480, 124 frames (5.2 s), 20 steps, audio on.
+Times are the server's own `Prompt executed in`; VRAM is a 2 s `nvidia-smi`
+poll (upper bound, desktop included):
+
+| Template | Seed | Time | s/frame | Peak VRAM |
+|---|---|---|---|---|
+| baseline | 42 | 151.1 s | 1.22 | 15.2 GiB |
+| accelerated | 42 | **68.3 s** | 0.55 | 15.2 GiB |
+| baseline | 43 | 134.6 s | 1.09 | 15.2 GiB |
+| accelerated | 43 | **64.5 s** | 0.52 | 14.3 GiB |
+
+The like-for-like pair (both with the text encoding already node-cached) gives
+**2.09×**. EasyCache alone contributed 1.43–1.54× (6–7 of 20 steps skipped, at
+its default `reuse_threshold` 0.2); the rest is the SageAttention patch.
+Same-seed output pairs were compared visually and are indistinguishable. The
+~2.46× reference figure was reported at 736 frames, where fixed costs amortise
+further, so these shorter-clip numbers are consistent with it.
+
+Two caveats for anyone re-measuring: ComfyUI returns a byte-identical workflow
+from its execution cache in 0.00 s, so repeat runs must vary the seed; and a
+prompt shared across templates keeps its cached text encoding, which is what
+makes the pairs above like-for-like.
+
+**Unaccelerated history** — 21 generations, all 864×480 at 24 fps with audio,
+`res_multistep` / `simple` / 20 steps, **no acceleration nodes**:
 
 | Frames | Duration | Wall-clock upper bound | Implied |
 |---|---|---|---|
@@ -211,8 +241,7 @@ captured yet.
 
 ### Reference figures
 
-From comparable 16 GB Blackwell hardware, for the acceleration this repo has not
-yet enabled:
+From comparable 16 GB Blackwell hardware:
 
 | Job | Time |
 |---|---|
@@ -245,8 +274,9 @@ device           NVIDIA GeForce RTX 5080
 capability       sm_120
 vram             15.47 GiB
 bf16             True
-sageattention    1.0.6
+sageattention    2.2.0
 triton           3.7.0
+kjnodes kernels  OK
 minimax nodes    OK
 easycache        OK
 ldm.minimax      OK

@@ -15,6 +15,7 @@ FROM nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04
 
 ARG COMFYUI_REF=v0.30.2
 ARG TORCH_VERSION=2.12.0
+ARG SAGEATTENTION_REF=d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 
@@ -62,11 +63,26 @@ ADD https://raw.githubusercontent.com/Comfy-Org/ComfyUI/${COMFYUI_REF}/requireme
     /tmp/comfyui-requirements.txt
 RUN pip install -r /tmp/comfyui-requirements.txt
 
-# --- Acceleration + ComfyUI-KJNodes dependencies.
-# --- SageAttention 1.x is Triton-based, so no nvcc build step is needed.
+# --- ComfyUI-KJNodes dependencies, plus build helpers for the SageAttention
+# --- compile below (packaging is imported by its setup.py, ninja parallelises
+# --- the extension build).
 RUN pip install \
-        sageattention==1.0.6 \
-        color-matcher matplotlib mss opencv-python-headless "pillow>=10.3.0"
+        color-matcher matplotlib mss opencv-python-headless "pillow>=10.3.0" \
+        ninja packaging
+
+# --- SageAttention, built from source. The PyPI 1.0.6 release predates the
+# --- int8/fp8 CUDA kernels (per_warp_int8_cuda, per_channel_fp8, ...) that
+# --- KJNodes' "MiniMax H3 Memory Efficient Sage Attention Patch" imports --
+# --- with 1.0.6 the node registers but fails at execution time.
+# --- TORCH_CUDA_ARCH_LIST=12.0 lets setup.py target sm_120 without a GPU
+# --- visible at build time, and keeps the nvcc pass Blackwell-only.
+ADD https://github.com/thu-ml/SageAttention/archive/${SAGEATTENTION_REF}.tar.gz \
+    /tmp/sageattention.tar.gz
+RUN mkdir /tmp/sageattention \
+    && tar -xzf /tmp/sageattention.tar.gz -C /tmp/sageattention --strip-components=1 \
+    && EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 8" \
+       pip install --no-build-isolation /tmp/sageattention \
+    && rm -rf /tmp/sageattention /tmp/sageattention.tar.gz
 
 # --- Hugging Face CLI, used by scripts/download_models.sh inside the container
 # --- so model downloads do not depend on the host Python environment.

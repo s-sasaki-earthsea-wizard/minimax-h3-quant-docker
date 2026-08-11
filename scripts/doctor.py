@@ -76,6 +76,23 @@ for pkg, required in (("sageattention", True), ("triton", False)):
     if version is None and required:
         FAILURES.append(f"{pkg} is not installed")
 
+# The KJNodes "MiniMax H3 Memory Efficient Sage Attention Patch" node imports
+# these kernels at module load (ComfyUI-KJNodes/nodes/ltxv_nodes.py). They only
+# exist in SageAttention built from source -- with the PyPI 1.0.6 release the
+# node still registers, then fails at execution time, so check the exact
+# import path here.
+try:
+    from sageattention.core import (  # noqa: F401
+        attn_false, get_cuda_arch_versions, per_block_int8_triton,
+        per_channel_fp8, per_thread_int8_triton, per_warp_int8_cuda)
+except ImportError as exc:
+    row("kjnodes kernels", "MISSING")
+    FAILURES.append(
+        f"sageattention lacks the kernels the KJNodes MiniMax patch needs "
+        f"({exc}) -- rebuild the image with the source-built SageAttention")
+else:
+    row("kjnodes kernels", "OK")
+
 print("\n== comfyui ==")
 # ComfyUI is bind-mounted, so a stale or missing checkout is a real failure mode.
 sys.path.insert(0, "/opt/ComfyUI")
