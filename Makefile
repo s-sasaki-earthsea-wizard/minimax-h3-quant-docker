@@ -101,12 +101,32 @@ gen: | .env ## Headless video: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [
 		$(if $(IMAGE),--image "$(IMAGE)") \
 		$(if $(SEED),--seed "$(SEED)") --server "http://localhost:$(COMFY_PORT)"
 
+.PHONY: gen-t2v
+gen-t2v: | .env ## Prompt -> Ollama -> video: make gen-t2v PROMPT="..." [SPEECH=ja] [DURATION=5] [SEED=n] [MODEL=...] [DRY_RUN=1]
+	@test -n "$(PROMPT)" || { echo 'usage: make gen-t2v PROMPT="..." [SPEECH=ja] [DURATION=5] [SEED=n] [MODEL=...] [DRY_RUN=1]'; exit 1; }
+	@test -z "$(IMAGE)" || { echo 'gen-t2v takes no IMAGE; use: make gen-i2v IMAGE=$(IMAGE) PROMPT="..."'; exit 1; }
+	python3 scripts/pipeline.py "$(PROMPT)" --model "$(MODEL)" --duration "$(DURATION)" \
+		$(if $(SPEECH),--speech "$(SPEECH)") \
+		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
+		--comfy-server "http://localhost:$(COMFY_PORT)"
+
+.PHONY: gen-i2v
+gen-i2v: | .env ## Still + prompt -> Ollama -> video: make gen-i2v IMAGE=path [PROMPT="..."] [SPEECH=ja] [IMAGE_PROMPT="..."] [DURATION=5] [SEED=n] [DRY_RUN=1]
+	@test -n "$(IMAGE)" || { echo 'usage: make gen-i2v IMAGE=path [PROMPT="..."] [SPEECH=ja] [IMAGE_PROMPT="..."] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
+	python3 scripts/pipeline.py $(if $(PROMPT),"$(PROMPT)") --image "$(IMAGE)" \
+		--model "$(MODEL)" --duration "$(DURATION)" \
+		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
+		$(if $(SPEECH),--speech "$(SPEECH)") \
+		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
+		--comfy-server "http://localhost:$(COMFY_PORT)"
+
 .PHONY: pipeline
-pipeline: | .env ## Ollama -> video: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]
-	@test -n "$(THEME)$(IMAGE)" || { echo 'usage: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
+pipeline: | .env ## Same, with the mode taken from IMAGE=: make pipeline THEME="..." [IMAGE=path] [SPEECH=ja] ...
+	@test -n "$(THEME)$(IMAGE)" || { echo 'usage: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [SPEECH=ja] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
 	python3 scripts/pipeline.py $(if $(THEME),"$(THEME)") --model "$(MODEL)" --duration "$(DURATION)" \
 		$(if $(IMAGE),--image "$(IMAGE)") \
 		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
+		$(if $(SPEECH),--speech "$(SPEECH)") \
 		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
 		--comfy-server "http://localhost:$(COMFY_PORT)"
 
