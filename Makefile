@@ -95,15 +95,18 @@ doctor: | .env ## Verify GPU / torch / quantization path / nodes from inside the
 		--entrypoint python comfyui /scripts/doctor.py
 
 .PHONY: gen
-gen: | .env ## Headless video: make gen PROMPT="..." [DURATION=5] [SEED=n]
-	@test -n "$(PROMPT)" || { echo 'usage: make gen PROMPT="..." [DURATION=5] [SEED=n]'; exit 1; }
+gen: | .env ## Headless video: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]
+	@test -n "$(PROMPT)" || { echo 'usage: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]'; exit 1; }
 	python3 scripts/generate.py --prompt "$(PROMPT)" --duration "$(DURATION)" \
+		$(if $(IMAGE),--image "$(IMAGE)") \
 		$(if $(SEED),--seed "$(SEED)") --server "http://localhost:$(COMFY_PORT)"
 
 .PHONY: pipeline
-pipeline: | .env ## Ollama -> video: make pipeline THEME="..." [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]
-	@test -n "$(THEME)" || { echo 'usage: make pipeline THEME="..." [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
-	python3 scripts/pipeline.py "$(THEME)" --model "$(MODEL)" --duration "$(DURATION)" \
+pipeline: | .env ## Ollama -> video: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]
+	@test -n "$(THEME)$(IMAGE)" || { echo 'usage: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
+	python3 scripts/pipeline.py $(if $(THEME),"$(THEME)") --model "$(MODEL)" --duration "$(DURATION)" \
+		$(if $(IMAGE),--image "$(IMAGE)") \
+		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
 		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
 		--comfy-server "http://localhost:$(COMFY_PORT)"
 
