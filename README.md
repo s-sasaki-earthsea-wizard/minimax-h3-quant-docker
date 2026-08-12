@@ -57,7 +57,7 @@ minimax-h3-quant-docker/
 │   ├── generate.py       headless generation via the ComfyUI API (`make gen`)
 │   ├── image_meta.py     size / aspect / embedded prompt of a still, stdlib only
 │   ├── prompt_gen.py     theme -> prompts via a local Ollama model
-│   └── pipeline.py       theme (+ still) -> Ollama -> MiniMax-H3 (`make pipeline`)
+│   └── pipeline.py       theme (+ still) -> Ollama -> MiniMax-H3 (`make gen-t2v` / `gen-i2v`)
 ├── templates/
 │   ├── video_minimax_h3_t2v_headless.json         API-format t2v workflow (baseline)
 │   ├── video_minimax_h3_t2v_headless_accel.json   + SageAttention patch + EasyCache (default)
@@ -90,14 +90,19 @@ make down
 Headless (no browser, server must be up):
 
 ```bash
-make gen PROMPT="..." DURATION=5            # your prompt -> video
-make pipeline THEME="..." DURATION=5        # theme -> Ollama prompt -> video
-make pipeline THEME="..." DRY_RUN=1         # prompts only, review before spending GPU time
+make gen     PROMPT="..." DURATION=5        # your prompt, passed through verbatim
+make gen-t2v PROMPT="..." DURATION=5        # your prompt -> Ollama rewrites it -> video
+make gen-t2v PROMPT="..." SPEECH=ja         # ... and make somebody speak Japanese in it
+make gen-t2v PROMPT="..." DRY_RUN=1         # prompts only, review before spending GPU time
 
-make gen PROMPT="..." IMAGE=data/input/still.png       # still -> video
-make pipeline IMAGE=data/input/still.png               # still -> Ollama prompt -> video
-make pipeline IMAGE=... THEME="..." DRY_RUN=1          # steer it, review the prompt first
+make gen     PROMPT="..." IMAGE=data/input/still.png     # still + your prompt, verbatim
+make gen-i2v IMAGE=data/input/still.png                  # still -> Ollama writes the motion -> video
+make gen-i2v IMAGE=... PROMPT="..." SPEECH=ja DRY_RUN=1  # steer it, review the prompt first
 ```
+
+`gen` hands your text to the video model unchanged; `gen-t2v` / `gen-i2v` send
+it to a local LLM first, which rewrites it into
+[MiniMax-H3's own prompt format](#the-prompt-format) and injects the result.
 
 ## Headless generation
 
@@ -137,10 +142,13 @@ your behalf:
 
 ### LLM-driven prompts
 
-`scripts/pipeline.py` chains a local LLM in front of it: a theme goes to
-Ollama (`make pipeline MODEL=...` to pick any `ollama list` entry) in one
-schema-constrained call. In t2v mode it returns **both** a still-image prompt
-and a video prompt, so the two stay consistent.
+`scripts/pipeline.py` chains a local LLM in front of it: your prompt goes to
+Ollama (`make gen-t2v MODEL=...` to pick any `ollama list` entry) in one
+schema-constrained call, and what comes back is submitted to ComfyUI. In t2v
+mode it returns **both** a still-image prompt and a video prompt, so the two
+stay consistent. `make gen-t2v` and `make gen-i2v` are the two entry points;
+`make pipeline` is the same thing with the mode taken from whether `IMAGE=` is
+set.
 
 In i2v mode the opening frame already exists, so the description travels the
 other way — into the LLM. It comes from `--image-prompt`, `--image-prompt-file`
@@ -157,6 +165,64 @@ starts; the pipeline is strictly sequential, so the models never contend.
 Generated prompts are saved to `data/output/prompts/` next to the videos for
 side-by-side review. Requires Ollama running on the host (default
 `http://localhost:11434`).
+
+#### The prompt format
+
+MiniMax-H3 does not take free-form text. Its prompt is three labelled fields,
+optionally preceded by a keyframe instruction line:
+
+```text
+For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+integrated_multimodal_description: [Shot 1] Detailed anime illustration style, a medium shot of the young woman shown in <Picture 1> ... and, gentle and slightly teasing (S1), says: <d>[Japanese]ねえ、これから一緒に出かけない？</d> [Shot 2] At 00:03.500, the camera cuts to ...
+
+overall_soundscape: Quiet indoor ambience with faint clothing rustle and soft breathing.
+
+non_diegetic_music: N/A
+```
+
+- The instruction line is only for i2v, and `<Picture 1>` is not decoration:
+  ComfyUI presents a first frame to the text encoder as `"<Picture 1>: "` plus
+  the vision block, ahead of the prompt (`comfy/text_encoders/minimax.py`), so
+  that is the name the prompt has to use for it.
+- `[Shot 1]` carries no timestamp; every later shot opens with a strictly
+  increasing cut time, `[Shot 2] At 00:03.500, ...`. Camera moves are written
+  as English actions with an optional amplitude and speed.
+- `overall_soundscape` covers ambience and action sound; `non_diegetic_music`
+  covers score the characters cannot hear, and is `N/A` rather than omitted
+  when there is none.
+
+The LLM returns the three fields as separate JSON values and `prompt_gen.py`
+assembles the text, so the labels, their order and the instruction line cannot
+drift — only the prose inside them is generated. The format follows the
+`h3-prompt-writing` skill shipped in the MiniMax-H3 repository
+(`skills/h3-prompt-writing/references/base-en.txt`).
+
+#### Making somebody speak
+
+MiniMax-H3 voices exactly what sits inside a `<d>` tag, and nothing else.
+*Asking* for dialogue in the prompt — "please include her dialogue in
+Japanese" — is read as description and produces a silent clip; the words to be
+heard have to be written out:
+
+```text
+The veteran pilot, hoarse and unhurried (S1), answers: <d>[Japanese]あの冬のことは、今でも夢に見るの。</d>
+```
+
+The speaker's description, id, verb and colon stay **outside** the tag; inside
+it go the language tag and the line itself, verbatim. Speaker ids `(S1)`,
+`(S2)` are stable across shots, `(S1,S2)` for people speaking together. The
+language tag is the English name of the language — `[Japanese]`, `[English]`
+— and the ISO form `[ja]` also works.
+
+`SPEECH=ja` (also `SPEECH=Japanese`, `en`, ...) makes dialogue in that language
+a hard requirement of the LLM call; `SPEECH=none` rules speech out; leaving it
+unset lets the model decide from your prompt. Because a prompt that only talks
+*about* speaking is the exact failure this flag exists to prevent, the answer
+is checked for a `<d>` tag and the call is retried once before giving up — one
+extra LLM call is cheap next to a wasted GPU run. `make gen`, which passes your
+text through untouched, warns when the prompt asks for speech but carries no
+`<d>` line.
 
 ## Configuration
 

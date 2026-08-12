@@ -49,6 +49,12 @@ COMFY_INPUT_DIR = REPO_ROOT / "data" / "input"
 DEFAULT_SERVER = "http://localhost:8188"
 POLL_INTERVAL_S = 5
 PROGRESS_EVERY_S = 60
+# Words that mean the prompt wants somebody to speak. MiniMax-H3 only voices
+# what sits literally inside <d>...</d>, so a prompt that merely talks about
+# dialogue produces a silent clip -- a trap worth a warning (issue #11).
+DIALOGUE_HINTS = ("dialogue", "speaks", "speaking", "says", "saying", "talks",
+                  "talking", "conversation", "interview", "monologue",
+                  "セリフ", "台詞", "話す", "喋", "発話")
 
 
 def find_nodes(workflow, class_type):
@@ -275,6 +281,25 @@ def collect_outputs(entry):
     return paths
 
 
+def warn_if_speech_unwritten(prompt):
+    """Warn when a prompt asks for speech but carries no spoken line.
+
+    Asking the model to "include her dialogue in Japanese" is an instruction
+    addressed to whoever writes the prompt; the video model reads it as
+    description and stays silent.
+    """
+    if "<d>" in prompt:
+        return
+    lowered = prompt.lower()
+    hint = next((w for w in DIALOGUE_HINTS if w in lowered), None)
+    if hint is None:
+        return
+    print(f"warning: the prompt mentions {hint!r} but carries no "
+          "<d>[Japanese]...</d> line, so nothing will be spoken. Write the "
+          "line itself, or let the LLM write it: make gen-t2v / gen-i2v "
+          "SPEECH=ja", file=sys.stderr)
+
+
 def run(prompt, duration_s, seed=None, server=DEFAULT_SERVER,
         template=None, megapixels=None, aspect_ratio=None, image=None,
         timeout_s=3600, wait=True):
@@ -348,6 +373,9 @@ def main():
                   else Path(args.prompt_file).read_text())
     else:
         prompt = args.prompt
+    # Only on this path: prompts written by pipeline.py are checked there,
+    # where the request for speech is known rather than guessed at.
+    warn_if_speech_unwritten(prompt)
 
     if args.dry_run:
         workflow = json.loads(
