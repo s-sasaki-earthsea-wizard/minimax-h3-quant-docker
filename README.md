@@ -24,6 +24,19 @@ The Comfy-Org repackage changes the arithmetic:
 | Audio VAE | `vae/minimax_h3_audio_vae_fp32.safetensors` | 0.61 GB |
 | | **Total** | **42.5 GB** |
 
+Optional, via `make models-turbo` — [step-distillation LoRAs](#turbo-loras--4-or-8-sampling-steps-instead-of-20)
+that cut sampling from 20 steps to 4 or 8:
+
+| Component | File | Size |
+|---|---|---|
+| Turbo LoRA (4 step) | `loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors` | 1.96 GB |
+| Turbo LoRA (8 step) | `loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors` | 1.96 GB |
+
+These two are the pair ComfyUI's bundled template ships with. Upstream is
+`lightx2v/Minimax-h3-Turbo`, which also carries newer 4-step revisions (v1.1,
+v1.2) and an 8-step `768p` variant that Comfy-Org does not mirror — untested
+here.
+
 `pruned` means the AdaLN branches are stripped. The MiniMax README notes that
 ~13B of the 33B parameters sit in AdaLN branches whose modulation outputs can be
 precomputed and cached, so they are not needed for inference-only deployment:
@@ -73,7 +86,7 @@ minimax-h3-quant-docker/
 │   └── video_minimax_h3_i2v_headless_accel.json   + SageAttention patch + EasyCache (default)
 ├── ComfyUI/              git checkout, bind-mounted to /opt/ComfyUI
 └── data/                 bind-mounted to /data (--base-directory)
-    ├── models/{diffusion_models,text_encoders,vae}
+    ├── models/{diffusion_models,text_encoders,vae,loras}
     ├── custom_nodes/ComfyUI-KJNodes
     ├── input/  output/  user/  temp/
 ```
@@ -158,6 +171,7 @@ Outputs are written on the far side. Fetch them with
 ```bash
 make setup     # create .env, clone ComfyUI + KJNodes, build the image (or venv)
 make models    # download 42.5 GB (resumable)
+make models-turbo  # optional: + 3.9 GB of step-distillation LoRAs (see TURBO= below)
 make doctor    # verify GPU, torch, sm_120, SageAttention
 make up        # http://localhost:8188
 make status
@@ -172,6 +186,8 @@ make gen     PROMPT="..." DURATION=5        # your prompt, passed through verbat
 make gen-t2v PROMPT="..." DURATION=5        # your prompt -> Ollama rewrites it -> video
 make gen-t2v PROMPT="..." SPEECH=ja         # ... and make somebody speak Japanese in it
 make gen-t2v PROMPT="..." DRY_RUN=1         # prompts only, review before spending GPU time
+
+make gen     PROMPT="..." DURATION=30.67 TURBO=4         # 4 sampling steps instead of 20
 
 make gen     PROMPT="..." IMAGE=data/input/still.png     # still + your prompt, verbatim
 make gen-i2v IMAGE=data/input/still.png                  # still -> Ollama writes the motion -> video
@@ -200,6 +216,46 @@ unaccelerated baseline:
   is still enforced server-side.
 - Jobs POSTed to `/prompt` queue server-side and run sequentially, so batch
   submission needs no extra logic.
+
+### Turbo LoRAs — 4 or 8 sampling steps instead of 20
+
+`TURBO=4` (`--turbo 4`) loads a step-distillation LoRA and drops the sampler to
+4 steps; `TURBO=8` uses the 8-step one. Fetch them first with
+`make models-turbo` (+3.9 GB, opt-in). [Measured at **1.80×** on 124
+frames](#turbo-lora-ab), and more on longer clips, because sampling is the part
+that scales with length while the ~22 s of fixed cost does not.
+
+`generate.py` rewrites the model chain rather than swapping templates:
+
+```
+UNETLoader -> LoraLoaderModelOnly -> SageAttention patch -> BasicScheduler(steps=4)
+              strength_model 1.0                         -> BasicGuider
+```
+
+Three edits, and they are ComfyUI's own — its bundled `video_minimax_h3_t2v`
+template has carried the same path behind an "Enable Lightning LoRA" switch
+since v0.35.0:
+
+- **The LoRA goes in front of the patch**, so everything downstream reads the
+  patched model. The SageAttention patch stays: it swaps the attention kernel,
+  which is orthogonal to how many steps the sampler takes.
+- **`EasyCache` comes out.** Skipping steps whose output barely moves is a
+  sound bet across 20 steps and a bad one across 4 — a distilled schedule has
+  nothing left to skip.
+- **Nothing else changes.** `scheduler` stays `simple`, the sampler stays
+  `res_multistep`, and `BasicGuider` is already CFG-free, which is what a
+  distilled model expects. Distilled LoRAs often want their own sigmas; this
+  one does not.
+
+Two things worth knowing before trusting it:
+
+- The 4-step file is named `768p` and the 8-step is not, so the 4-step looked
+  like it might be resolution-bound. At 864×480 (0.4 MP) it is not: the output
+  is coherent and, on the pair measured here, visibly sharper than the 20-step
+  baseline. This has not been checked at other resolutions.
+- Same seed does **not** mean the same clip. The LoRA changes the denoising
+  trajectory, so a turbo run is a different take on the same prompt, not a
+  faster render of the same video.
 
 ### Image to video
 
@@ -364,6 +420,11 @@ VRAM penalty and no visible quality difference on same-seed pairs. The two
 chunking nodes remain unused: peak VRAM is unchanged by the patch, so there is
 nothing for them to buy yet.
 
+`LoraLoaderModelOnly` joins them under `TURBO=`, and takes `EasyCache` back out
+— see [Turbo LoRAs](#turbo-loras--4-or-8-sampling-steps-instead-of-20). The two
+accelerations compose: the patch changes the attention kernel, the LoRA changes
+how many steps run.
+
 ## Frame counts are quantised to 17k + 5
 
 The video VAE compresses 17 frames per latent, so a request only lands on a whole
@@ -406,6 +467,54 @@ from its execution cache in 0.00 s, so repeat runs must vary the seed; and a
 prompt shared across templates keeps its cached text encoding, which is what
 makes the pairs above like-for-like.
 
+<a id="turbo-lora-ab"></a>
+**Turbo LoRA A/B** — same container, same prompt, same seed (4301), 864×480,
+124 frames, audio on, ComfyUI v0.35.0, host otherwise idle (`nvme0n1` at 0.6 %
+util). Only `--turbo` differs:
+
+| Sampling | Steps run | s/step | Sampling | `Prompt executed in` | vs baseline | Peak VRAM |
+|---|---|---|---|---|---|---|
+| 20 steps + EasyCache (default) | 13 of 20 | 3.15 s | 41 s | 63.7 s | 1.00× | 15 613 MiB |
+| turbo 8-step | 8 | 3.59 s | 29 s | 51.9 s | 1.23× | 15 557 MiB |
+| turbo 4-step | 4 | 3.60 s | 14 s | **35.5 s** | **1.80×** | 15 645 MiB |
+
+Three things this says that "4 steps instead of 20 is 5×" does not:
+
+- **The honest denominator is 13, not 20.** EasyCache already skips 6–7 steps,
+  so the default is not paying for 20 of them.
+- **A LoRA step costs ~14 % more** (3.60 s against 3.15 s). The weights are
+  streamed from disk on a 16 GB card, and the patch is re-applied as they land.
+- **~22 s of every run is fixed** — model staging, text encode, VAE decode —
+  and no step count touches it. That is 62 % of the turbo-4 run at 124 frames
+  and a rounding error at 736, which is why the ratio improves with length.
+
+Peak VRAM is unchanged: a LoRA adds weights, not activations. Steps buy time,
+not headroom.
+
+**Turbo at 736 frames** — the length the ratio was supposed to reward. Same
+prompt and seed, 864×480, 30.7 s, audio on:
+
+| | Frames | Sampling | `Prompt executed in` | Peak VRAM |
+|---|---:|---:|---:|---:|
+| RTX 5080, turbo 4-step | 736 | 203 s (50.8 s/step) | **312 s** (5 min 12 s) | 15 547 MiB |
+| RTX 5080, 20 steps + EasyCache | 736 | — | not measured (issue #2) | — |
+| RTX 5080, no acceleration (historical bound) | 736 | — | ≤ 46.9 min | — |
+| RTX PRO 6000 (96 GB), 20 steps + EasyCache | 736 | 286 s | 374 s (6 min 14 s) | — |
+
+Fixed cost is 109 s here against ~22 s at 124 frames — the VAE has 6× the
+frames to decode — but sampling is now 65 % of the run, so the step count is
+finally the thing worth cutting. A 30 s clip on the 16 GB card went from an
+"start it and go do something else" job to **5 minutes**, which is
+iterate-on-it territory, and it now lands **ahead of a 96 GB RTX PRO 6000
+running the 20-step template** — a card that holds every weight resident and
+never touches the disk mid-generation.
+
+The clip was checked end to end: coherent for the full 30.7 s, and audio at the
+same −14 dB mean as the baseline runs. It stays well clear of the length at
+which the model itself gives out — 61 s still holds, 89 s comes back as a
+uniform grey-brown surface regardless of VRAM (issue #14) — so turbo does not
+move that ceiling either way.
+
 **Unaccelerated history** — 21 generations, all 864×480 at 24 fps with audio,
 `res_multistep` / `simple` / 20 steps, **no acceleration nodes**:
 
@@ -444,6 +553,10 @@ Start from the official 0.4 MP / 5 s / 20 step template and confirm a stable
 baseline before changing anything. Then move one variable at a time — resolution,
 then duration, then step count. Changing several at once makes OOM causes
 impossible to attribute.
+
+`TURBO=` is the exception to "confirm the baseline first" only in the sense
+that it costs nothing to try: it does not move peak VRAM, so it cannot turn a
+working configuration into an OOM. It does change what comes out.
 
 If it OOMs, escalate via `COMFY_EXTRA_ARGS` in `.env`, cheapest first:
 `--reserve-vram 1.5`, then `--cache-none`, then `--novram`.
