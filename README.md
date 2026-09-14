@@ -62,6 +62,7 @@ minimax-h3-quant-docker/
 │   ├── setup_native.sh   builds the venv for TARGET_ENV=cloud (`make venv`)
 │   ├── run_native.sh     starts/stops ComfyUI for TARGET_ENV=cloud (`make up`)
 │   ├── generate.py       headless generation via the ComfyUI API (`make gen`)
+│   ├── duration_ladder.sh  same clip at increasing lengths: exec time, VRAM peak, what came out
 │   ├── image_meta.py     size / aspect / embedded prompt of a still, stdlib only
 │   ├── prompt_gen.py     theme -> prompts via a local Ollama model
 │   └── pipeline.py       theme (+ still) -> Ollama -> MiniMax-H3 (`make gen-t2v` / `gen-i2v`)
