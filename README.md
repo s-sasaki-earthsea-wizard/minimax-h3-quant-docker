@@ -104,6 +104,54 @@ venv beside the repo. Docker is the *means* here, not the claim; see
 Do not reach for `cloud` merely to avoid installing Docker. The container is
 what makes the [verified stack](#verified-stack) reproducible.
 
+### Driving a ComfyUI on another machine
+
+`REMOTE=<ssh host>` sends the generation to a ComfyUI elsewhere while the
+prompt-writing LLM stays where you are. This is a different axis from
+`TARGET_ENV` — that one says how ComfyUI runs *here* — so it composes with
+either path and adds no targets of its own.
+
+```bash
+make pipeline THEME="..." IMAGE=~/Pictures/still.png REMOTE=runpod-direct
+make gen-i2v  IMAGE=~/Pictures/still.png             REMOTE=runpod-direct
+```
+
+The host is a `Host` block in `~/.ssh/config`, not a `user@host` string: a pod
+reached on a non-standard port has nowhere else to put it.
+
+```
+Host runpod-direct
+  HostName <pod public ip>
+  Port <pod tcp port>
+  User root
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+```
+
+[`scripts/with_remote.sh`](scripts/with_remote.sh) opens an SSH tunnel for
+exactly the length of the command and tears it down on the way out, points
+`--comfy-server` at the forwarded port, and turns on `--upload-always`. It
+checks that something answers at the far end *before* running the command, so a
+server that is down costs you an error rather than a minute of LLM time.
+
+Only the HTTP API travels. Ollama stays on the machine you typed the command on,
+which is the point: no second copy of a 15 GB model on the remote host, and no
+contending for VRAM with a generation already running there.
+
+The tunnel is not a convenience. ComfyUI has no authentication — `cli_args.py`
+offers `--tls-keyfile`/`--tls-certfile` and nothing else — so a reachable port
+is an open invitation to submit jobs and read and write files on that host. SSH
+is the only thing authenticating this.
+
+Outputs are written on the far side. Fetch them with
+`rsync -avP <host>:<repo>/data/output/video/ ./`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REMOTE` | *(unset)* | SSH host running ComfyUI; setting it enables everything above |
+| `REMOTE_PORT` | `9188` | Local port to forward through; change it if that one is taken |
+| `REMOTE_COMFY_PORT` | `$(COMFY_PORT)` | Port ComfyUI listens on over there |
+
 ## Usage
 
 ```bash
