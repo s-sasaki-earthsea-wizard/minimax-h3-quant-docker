@@ -7,6 +7,7 @@ ENV_SRC := $(if $(wildcard .env),.env,.env.example)
 env_get = $(shell grep -E '^$(1)=' $(ENV_SRC) | cut -d= -f2)
 
 COMFYUI_REF := $(call env_get,COMFYUI_REF)
+KJNODES_REF := $(call env_get,KJNODES_REF)
 COMFY_PORT := $(call env_get,COMFY_PORT)
 
 # Which deployment path this machine uses -- see makefiles/.
