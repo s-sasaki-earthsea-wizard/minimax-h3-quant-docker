@@ -31,6 +31,11 @@ models-ref2va: ## Additionally fetch the Ref2VA DiT (+21GB)
 	PATH="$(VENV)/bin:$$PATH" MODELS_DIR="$(CURDIR)/data/models" TASKS=ref2va \
 		scripts/download_models.sh
 
+.PHONY: models-turbo
+models-turbo: ## Additionally fetch the 4/8-step turbo LoRAs (+3.9GB)
+	PATH="$(VENV)/bin:$$PATH" MODELS_DIR="$(CURDIR)/data/models" TURBO=1 \
+		scripts/download_models.sh
+
 .PHONY: up
 up: | .env ## Start ComfyUI (background, survives SSH loss)
 	VENV="$(VENV)" scripts/run_native.sh start
