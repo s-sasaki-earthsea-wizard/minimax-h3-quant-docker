@@ -42,13 +42,16 @@ checkout: ## Fetch / update ComfyUI and KJNodes
 		echo ">> ComfyUI: cloning $(COMFYUI_REF)"; \
 		git clone --depth 1 --branch $(COMFYUI_REF) $(COMFYUI_REPO) ComfyUI; \
 	fi
-	@if [ -d data/custom_nodes/ComfyUI-KJNodes/.git ]; then \
-		echo ">> KJNodes: pulling"; \
-		git -C data/custom_nodes/ComfyUI-KJNodes pull --ff-only; \
-	else \
+# KJNodes publishes no tags, so KJNODES_REF is a commit and the checkout is
+# always fetch-by-sha + detach: a shallow clone alone cannot reach an arbitrary
+# commit, and `pull --ff-only` would put us back on upstream HEAD.
+	@if [ ! -d data/custom_nodes/ComfyUI-KJNodes/.git ]; then \
 		echo ">> KJNodes: cloning"; \
 		git clone --depth 1 $(KJNODES_REPO) data/custom_nodes/ComfyUI-KJNodes; \
 	fi
+	@echo ">> KJNodes: fetching $(KJNODES_REF)"
+	@git -C data/custom_nodes/ComfyUI-KJNodes fetch --depth 1 origin $(KJNODES_REF) && \
+		git -C data/custom_nodes/ComfyUI-KJNodes checkout --detach FETCH_HEAD
 
 .PHONY: gen
 gen: | .env ## Headless video: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]

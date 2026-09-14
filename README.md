@@ -315,7 +315,8 @@ leaves everything written into `data/` unwritable. Edit `.env` afterwards;
 | Variable | Default | Purpose |
 |---|---|---|
 | `TARGET_ENV` | `onprem` | Which of `makefiles/` `make` includes; see [Deployment paths](#deployment-paths) |
-| `COMFYUI_REF` | `v0.30.2` | ComfyUI tag to check out and to pin the image's requirements against |
+| `COMFYUI_REF` | `v0.35.0` | ComfyUI tag to check out and to pin the image's requirements against |
+| `KJNODES_REF` | `d3cfe21...` | ComfyUI-KJNodes commit to check out (it publishes no tags) |
 | `TORCH_VERSION` | `2.12.0` | Installed from the cu130 index |
 | `SAGEATTENTION_REF` | `d1a57a5...` | thu-ml/SageAttention commit compiled into the image |
 | `HOST_UID` / `HOST_GID` | your `id -u` / `id -g` | Ownership of bind-mounted files |
@@ -326,7 +327,8 @@ leaves everything written into `data/` unwritable. Edit `.env` afterwards;
 
 | | Version | Why |
 |---|---|---|
-| ComfyUI | `v0.30.2` | `comfy_extras/nodes_minimax_h3.py` and `nodes_easycache.py` are native from 0.30.0 |
+| ComfyUI | `v0.35.0` | `comfy_extras/nodes_minimax_h3.py` and `nodes_easycache.py` are native from 0.30.0; 0.35 adds MiniMax-H3 LoRA support and two changes to its peak-memory handling |
+| ComfyUI-KJNodes | `d3cfe21` (1.5.2) | Supplies the MiniMax SageAttention patch node and `MiniMaxH3TokenCounter`. Pinned by commit because the project publishes no tags |
 | PyTorch | `2.12.0+cu130` | Matches the validated 16 GB Blackwell reference stack; the host's 2.10+cu128 is untested for the NVFP4 dequant path |
 | CUDA base | `13.0.1-cudnn-devel` | `devel` so nvcc can compile SageAttention and Triton/JIT kernels for sm_120 |
 | SageAttention | source @ `d1a57a5` (2.2.0) | The PyPI 1.0.6 release lacks the int8/fp8 kernels the KJNodes MiniMax patch imports — the node registers but fails at execution. Built from source for sm_120 only (~106 s) |
