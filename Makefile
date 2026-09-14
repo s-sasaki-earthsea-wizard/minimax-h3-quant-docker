@@ -1,15 +1,21 @@
 SHELL := /bin/bash
-COMPOSE := docker compose -f docker/compose.yaml --env-file .env
-COMFYUI_REPO := https://github.com/Comfy-Org/ComfyUI.git
-KJNODES_REPO := https://github.com/kijai/ComfyUI-KJNodes.git
 
 # .env is gitignored, so on a fresh clone it does not exist yet. Variables are
 # expanded while the makefile is parsed -- before the .env rule below could run
 # -- so read from .env.example whenever .env is still missing.
 ENV_SRC := $(if $(wildcard .env),.env,.env.example)
 env_get = $(shell grep -E '^$(1)=' $(ENV_SRC) | cut -d= -f2)
+
 COMFYUI_REF := $(call env_get,COMFYUI_REF)
 COMFY_PORT := $(call env_get,COMFY_PORT)
+
+# Which deployment path this machine uses -- see makefiles/.
+#   onprem  Docker + Compose
+#   cloud   plain venv, for hosts where Docker cannot run at all
+# It lives in .env because .env is already the per-machine, gitignored config
+# file, so the machine that needs a different path is the machine that already
+# has its own copy. .env.example ships the onprem default.
+TARGET_ENV := $(or $(call env_get,TARGET_ENV),onprem)
 
 .DEFAULT_GOAL := help
 
@@ -27,113 +33,21 @@ MODEL ?= hf.co/TrevorJS/gemma-4-26B-A4B-it-uncensored-GGUF:Q4_K_M
 	@sed -i -e "s/^HOST_UID=.*/HOST_UID=$$(id -u)/" \
 	        -e "s/^HOST_GID=.*/HOST_GID=$$(id -g)/" $@
 	@echo ">> created .env from .env.example (uid=$$(id -u) gid=$$(id -g))"
+	@echo ">> TARGET_ENV=$(TARGET_ENV) -- edit .env if this machine cannot run Docker"
 
 .PHONY: help
 help: ## Show this help
+	@printf '  target env: \033[36m%s\033[0m  (makefiles/%s.mk -- change TARGET_ENV in .env)\n\n' \
+		"$(TARGET_ENV)" "$(TARGET_ENV)"
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: setup
-setup: checkout build | .env ## First-time setup (fetch sources + build image)
-	@echo
-	@echo "Next: run 'make models' to download the 42.5GB weights."
+# Targets that do not care which path is in use.
+include makefiles/common.mk
 
-.PHONY: checkout
-checkout: ## Fetch / update ComfyUI and KJNodes
-	@if [ -d ComfyUI/.git ]; then \
-		echo ">> ComfyUI: fetching $(COMFYUI_REF)"; \
-		git -C ComfyUI fetch --tags --depth 1 origin $(COMFYUI_REF) && \
-		git -C ComfyUI checkout --detach FETCH_HEAD; \
-	else \
-		echo ">> ComfyUI: cloning $(COMFYUI_REF)"; \
-		git clone --depth 1 --branch $(COMFYUI_REF) $(COMFYUI_REPO) ComfyUI; \
-	fi
-	@if [ -d data/custom_nodes/ComfyUI-KJNodes/.git ]; then \
-		echo ">> KJNodes: pulling"; \
-		git -C data/custom_nodes/ComfyUI-KJNodes pull --ff-only; \
-	else \
-		echo ">> KJNodes: cloning"; \
-		git clone --depth 1 $(KJNODES_REPO) data/custom_nodes/ComfyUI-KJNodes; \
-	fi
-
-.PHONY: build
-build: | .env ## Build the Docker image
-	$(COMPOSE) build
-
-.PHONY: models
-models: | .env ## Download weights (minimal FL2VA set, 42.5GB)
-	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
-		--entrypoint bash comfyui /scripts/download_models.sh
-
-.PHONY: models-ref2va
-models-ref2va: | .env ## Additionally fetch the Ref2VA DiT (+21GB)
-	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
-		-e TASKS=ref2va --entrypoint bash comfyui /scripts/download_models.sh
-
-.PHONY: up
-up: | .env ## Start ComfyUI (background)
-	$(COMPOSE) up -d
-	@echo
-	@echo "  http://localhost:$(COMFY_PORT)"
-	@echo "  Logs: make logs"
-
-.PHONY: down
-down: | .env ## Stop and remove containers
-	$(COMPOSE) down
-
-.PHONY: logs
-logs: | .env ## Follow the logs
-	$(COMPOSE) logs -f
-
-.PHONY: shell
-shell: | .env ## Open a bash shell in the container
-	$(COMPOSE) run --rm --no-deps --entrypoint bash comfyui
-
-.PHONY: doctor
-doctor: | .env ## Verify GPU / torch / quantization path / nodes from inside the container
-	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
-		--entrypoint python comfyui /scripts/doctor.py
-
-.PHONY: gen
-gen: | .env ## Headless video: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]
-	@test -n "$(PROMPT)" || { echo 'usage: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]'; exit 1; }
-	python3 scripts/generate.py --prompt "$(PROMPT)" --duration "$(DURATION)" \
-		$(if $(IMAGE),--image "$(IMAGE)") \
-		$(if $(SEED),--seed "$(SEED)") --server "http://localhost:$(COMFY_PORT)"
-
-.PHONY: gen-t2v
-gen-t2v: | .env ## Prompt -> Ollama -> video: make gen-t2v PROMPT="..." [SPEECH=ja] [DURATION=5] [SEED=n] [MODEL=...] [DRY_RUN=1]
-	@test -n "$(PROMPT)" || { echo 'usage: make gen-t2v PROMPT="..." [SPEECH=ja] [DURATION=5] [SEED=n] [MODEL=...] [DRY_RUN=1]'; exit 1; }
-	@test -z "$(IMAGE)" || { echo 'gen-t2v takes no IMAGE; use: make gen-i2v IMAGE=$(IMAGE) PROMPT="..."'; exit 1; }
-	python3 scripts/pipeline.py "$(PROMPT)" --model "$(MODEL)" --duration "$(DURATION)" \
-		$(if $(SPEECH),--speech "$(SPEECH)") \
-		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
-		--comfy-server "http://localhost:$(COMFY_PORT)"
-
-.PHONY: gen-i2v
-gen-i2v: | .env ## Still + prompt -> Ollama -> video: make gen-i2v IMAGE=path [PROMPT="..."] [SPEECH=ja] [IMAGE_PROMPT="..."] [DURATION=5] [SEED=n] [DRY_RUN=1]
-	@test -n "$(IMAGE)" || { echo 'usage: make gen-i2v IMAGE=path [PROMPT="..."] [SPEECH=ja] [IMAGE_PROMPT="..."] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
-	python3 scripts/pipeline.py $(if $(PROMPT),"$(PROMPT)") --image "$(IMAGE)" \
-		--model "$(MODEL)" --duration "$(DURATION)" \
-		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
-		$(if $(SPEECH),--speech "$(SPEECH)") \
-		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
-		--comfy-server "http://localhost:$(COMFY_PORT)"
-
-.PHONY: pipeline
-pipeline: | .env ## Same, with the mode taken from IMAGE=: make pipeline THEME="..." [IMAGE=path] [SPEECH=ja] ...
-	@test -n "$(THEME)$(IMAGE)" || { echo 'usage: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [SPEECH=ja] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
-	python3 scripts/pipeline.py $(if $(THEME),"$(THEME)") --model "$(MODEL)" --duration "$(DURATION)" \
-		$(if $(IMAGE),--image "$(IMAGE)") \
-		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
-		$(if $(SPEECH),--speech "$(SPEECH)") \
-		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
-		--comfy-server "http://localhost:$(COMFY_PORT)"
-
-.PHONY: nvidia-smi
-nvidia-smi: ## Show GPU usage
-	@nvidia-smi
-
-.PHONY: clean
-clean: | .env ## Remove containers and images (weights are kept)
-	$(COMPOSE) down --rmi local
+# Fail with an explanation rather than make's bare "No such file or directory".
+ifeq ($(wildcard makefiles/$(TARGET_ENV).mk),)
+$(error TARGET_ENV='$(TARGET_ENV)' has no makefiles/$(TARGET_ENV).mk. \
+        Set TARGET_ENV=onprem or TARGET_ENV=cloud in .env)
+endif
+include makefiles/$(TARGET_ENV).mk

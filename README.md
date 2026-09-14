@@ -48,12 +48,19 @@ Verified on this machine:
 ```text
 minimax-h3-quant-docker/
 ├── .env.example          template; `make` copies it to .env (gitignored)
+├── Makefile              shared vars, the .env rule, help; includes makefiles/
+├── makefiles/
+│   ├── common.mk         targets that do not care how ComfyUI was started
+│   ├── onprem.mk         Docker + Compose      (TARGET_ENV=onprem)
+│   └── cloud.mk          plain venv, no Docker (TARGET_ENV=cloud)
 ├── docker/
 │   ├── Dockerfile        CUDA 13.0 + torch 2.12.0+cu130 + SageAttention
 │   └── compose.yaml
 ├── scripts/
 │   ├── download_models.sh
 │   ├── doctor.py         stack verification, run by `make doctor`
+│   ├── setup_native.sh   builds the venv for TARGET_ENV=cloud (`make venv`)
+│   ├── run_native.sh     starts/stops ComfyUI for TARGET_ENV=cloud (`make up`)
 │   ├── generate.py       headless generation via the ComfyUI API (`make gen`)
 │   ├── image_meta.py     size / aspect / embedded prompt of a still, stdlib only
 │   ├── prompt_gen.py     theme -> prompts via a local Ollama model
@@ -76,13 +83,83 @@ state. Only the empty `data/` skeleton is tracked, so that Compose finds the
 bind-mount source already present and owned by you rather than creating it as
 root.
 
+## Deployment paths
+
+`TARGET_ENV` in `.env` selects which of `makefiles/` is included. Both define
+the same target names, so the commands below are the same on either machine.
+
+| `TARGET_ENV` | Isolation | For |
+|---|---|---|
+| `onprem` (default) | Docker + Compose | the validated path |
+| `cloud` | none — a plain venv | hosts where Docker *cannot* run |
+
+`cloud` exists for one specific reason: a RunPod GPU pod is itself a container,
+running with the default capability set and no `/dev/fuse`, so neither
+Docker-in-Docker nor rootless Podman can work inside it. It is the same recipe
+— same pins, same checkout, same workflow templates — with the isolation
+removed, built by [`scripts/setup_native.sh`](scripts/setup_native.sh) into a
+venv beside the repo. Docker is the *means* here, not the claim; see
+[Why this exists](#why-this-exists).
+
+Do not reach for `cloud` merely to avoid installing Docker. The container is
+what makes the [verified stack](#verified-stack) reproducible.
+
+### Driving a ComfyUI on another machine
+
+`REMOTE=<ssh host>` sends the generation to a ComfyUI elsewhere while the
+prompt-writing LLM stays where you are. This is a different axis from
+`TARGET_ENV` — that one says how ComfyUI runs *here* — so it composes with
+either path and adds no targets of its own.
+
+```bash
+make pipeline THEME="..." IMAGE=~/Pictures/still.png REMOTE=runpod-direct
+make gen-i2v  IMAGE=~/Pictures/still.png             REMOTE=runpod-direct
+```
+
+The host is a `Host` block in `~/.ssh/config`, not a `user@host` string: a pod
+reached on a non-standard port has nowhere else to put it.
+
+```
+Host runpod-direct
+  HostName <pod public ip>
+  Port <pod tcp port>
+  User root
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+```
+
+[`scripts/with_remote.sh`](scripts/with_remote.sh) opens an SSH tunnel for
+exactly the length of the command and tears it down on the way out, points
+`--comfy-server` at the forwarded port, and turns on `--upload-always`. It
+checks that something answers at the far end *before* running the command, so a
+server that is down costs you an error rather than a minute of LLM time.
+
+Only the HTTP API travels. Ollama stays on the machine you typed the command on,
+which is the point: no second copy of a 15 GB model on the remote host, and no
+contending for VRAM with a generation already running there.
+
+The tunnel is not a convenience. ComfyUI has no authentication — `cli_args.py`
+offers `--tls-keyfile`/`--tls-certfile` and nothing else — so a reachable port
+is an open invitation to submit jobs and read and write files on that host. SSH
+is the only thing authenticating this.
+
+Outputs are written on the far side. Fetch them with
+`rsync -avP <host>:<repo>/data/output/video/ ./`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REMOTE` | *(unset)* | SSH host running ComfyUI; setting it enables everything above |
+| `REMOTE_PORT` | `9188` | Local port to forward through; change it if that one is taken |
+| `REMOTE_COMFY_PORT` | `$(COMFY_PORT)` | Port ComfyUI listens on over there |
+
 ## Usage
 
 ```bash
-make setup     # create .env, clone ComfyUI + KJNodes, build the image
+make setup     # create .env, clone ComfyUI + KJNodes, build the image (or venv)
 make models    # download 42.5 GB (resumable)
-make doctor    # verify GPU, torch, sm_120, SageAttention inside the container
+make doctor    # verify GPU, torch, sm_120, SageAttention
 make up        # http://localhost:8188
+make status
 make logs
 make down
 ```
@@ -227,14 +304,16 @@ text through untouched, warns when the prompt asks for speech but carries no
 ## Configuration
 
 `.env` is not in version control: it carries this machine's uid/gid and
-whatever tuning flags are currently in flight. Any `make` target that talks to
-Compose creates it from `.env.example` on first use, substituting your own
+whatever tuning flags are currently in flight — including which deployment path
+this machine uses. Most `make` targets create it from `.env.example` on first
+use, substituting your own
 `id -u` / `id -g` — the container user is built from those, and a mismatch
 leaves everything written into `data/` unwritable. Edit `.env` afterwards;
 `.env.example` only supplies the defaults.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `TARGET_ENV` | `onprem` | Which of `makefiles/` `make` includes; see [Deployment paths](#deployment-paths) |
 | `COMFYUI_REF` | `v0.30.2` | ComfyUI tag to check out and to pin the image's requirements against |
 | `TORCH_VERSION` | `2.12.0` | Installed from the cu130 index |
 | `SAGEATTENTION_REF` | `d1a57a5...` | thu-ml/SageAttention commit compiled into the image |

@@ -5,6 +5,7 @@ Run via `make doctor`. Exits non-zero if a hard requirement is missing.
 
 import importlib.metadata
 import importlib.util
+import os
 import sys
 
 FAILURES: list[str] = []
@@ -94,8 +95,12 @@ else:
     row("kjnodes kernels", "OK")
 
 print("\n== comfyui ==")
-# ComfyUI is bind-mounted, so a stale or missing checkout is a real failure mode.
-sys.path.insert(0, "/opt/ComfyUI")
+# ComfyUI is bind-mounted at /opt/ComfyUI in the container, so a stale or missing
+# checkout is a real failure mode. The native path (scripts/setup_native.sh) keeps
+# the checkout inside the repo instead, so allow COMFYUI_DIR to redirect this.
+comfyui_dir = os.environ.get("COMFYUI_DIR", "/opt/ComfyUI")
+row("checkout", comfyui_dir)
+sys.path.insert(0, comfyui_dir)
 for label, spec in (
     ("minimax nodes", "comfy_extras.nodes_minimax_h3"),
     ("easycache", "comfy_extras.nodes_easycache"),
@@ -104,7 +109,7 @@ for label, spec in (
     found = importlib.util.find_spec(spec) is not None
     row(label, "OK" if found else "MISSING")
     if not found:
-        FAILURES.append(f"{spec} not found under /opt/ComfyUI -- run `make checkout`")
+        FAILURES.append(f"{spec} not found under {comfyui_dir} -- run `make checkout`")
 
 print()
 for warning in WARNINGS:

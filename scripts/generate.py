@@ -44,7 +44,10 @@ DEFAULT_TEMPLATE_T2V = TEMPLATES_DIR / "video_minimax_h3_t2v_headless_accel.json
 DEFAULT_TEMPLATE_I2V = TEMPLATES_DIR / "video_minimax_h3_i2v_headless_accel.json"
 # ComfyUI runs with --base-directory /data and ./data is bind-mounted there, so
 # a file already sitting under data/input is addressable by name alone and does
-# not need uploading.
+# not need uploading. That assumption holds only while the server shares this
+# filesystem: against a remote ComfyUI -- a pod reached through an SSH tunnel,
+# say -- the name would point at a file that is not there, and LoadImage fails
+# at execution time rather than at submit. Pass --upload-always for that case.
 COMFY_INPUT_DIR = REPO_ROOT / "data" / "input"
 DEFAULT_SERVER = "http://localhost:8188"
 POLL_INTERVAL_S = 5
@@ -124,21 +127,24 @@ def upload_image(path, server):
     return name
 
 
-def prepare_image(path, server, upload=True):
+def prepare_image(path, server, upload=True, always_upload=False):
     """Return the name a LoadImage node should carry for this file.
 
     Args:
         path: path to the initial frame on this machine.
         server: ComfyUI base URL, used only when the file has to be uploaded.
         upload: set False for dry runs, which must not touch the server.
+        always_upload: skip the data/input shortcut, which is only sound when
+            the server shares this filesystem. Required against a remote one.
     """
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_file():
         sys.exit(f"error: image not found: {path}")
-    try:
-        return resolved.relative_to(COMFY_INPUT_DIR).as_posix()
-    except ValueError:
-        pass
+    if not always_upload:
+        try:
+            return resolved.relative_to(COMFY_INPUT_DIR).as_posix()
+        except ValueError:
+            pass
     if not upload:
         print(f"note: {path} is outside data/input and would be uploaded; "
               "the dry run assumes it keeps its name", file=sys.stderr)
@@ -302,7 +308,7 @@ def warn_if_speech_unwritten(prompt):
 
 def run(prompt, duration_s, seed=None, server=DEFAULT_SERVER,
         template=None, megapixels=None, aspect_ratio=None, image=None,
-        timeout_s=3600, wait=True):
+        timeout_s=3600, wait=True, always_upload=False):
     """Submit one generation job and (optionally) wait for its outputs.
 
     Args:
@@ -318,7 +324,7 @@ def run(prompt, duration_s, seed=None, server=DEFAULT_SERVER,
         seed = random.randrange(2**48)
     image_name = None
     if image is not None:
-        image_name = prepare_image(image, server)
+        image_name = prepare_image(image, server, always_upload=always_upload)
         if aspect_ratio is None:
             aspect_ratio = aspect_for_image(image)
     apply_parameters(workflow, prompt, duration_s, seed,
@@ -348,6 +354,10 @@ def main():
                         help="initial frame; switches to the i2v template")
     parser.add_argument("--duration", type=float, default=5.0,
                         help="clip length in seconds (default: 5)")
+    parser.add_argument("--upload-always", action="store_true",
+                        help="upload the initial frame even when it sits under "
+                             "data/input; required when ComfyUI does not share "
+                             "this filesystem (e.g. a remote server)")
     parser.add_argument("--seed", type=int, default=None,
                         help="noise seed (default: random)")
     parser.add_argument("--megapixels", type=float, default=None,
@@ -383,7 +393,8 @@ def main():
         seed = args.seed if args.seed is not None else random.randrange(2**48)
         image_name, aspect = None, args.aspect
         if args.image is not None:
-            image_name = prepare_image(args.image, args.server, upload=False)
+            image_name = prepare_image(args.image, args.server, upload=False,
+                                       always_upload=args.upload_always)
             if aspect is None:
                 aspect = aspect_for_image(args.image)
         apply_parameters(workflow, prompt, args.duration, seed,
@@ -395,7 +406,7 @@ def main():
     run(prompt, args.duration, seed=args.seed, server=args.server,
         template=args.template, megapixels=args.megapixels,
         aspect_ratio=args.aspect, image=args.image, timeout_s=args.timeout,
-        wait=not args.no_wait)
+        wait=not args.no_wait, always_upload=args.upload_always)
 
 
 if __name__ == "__main__":
