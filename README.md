@@ -484,6 +484,8 @@ Three things this says that "4 steps instead of 20 is 5×" does not:
   so the default is not paying for 20 of them.
 - **A LoRA step costs ~14 % more** (3.60 s against 3.15 s). The weights are
   streamed from disk on a 16 GB card, and the patch is re-applied as they land.
+  Confirmed by elimination: on [96 GB, where the weights stay
+  resident](#turbo-on-96gb), the same step costs +0.6 %.
 - **~22 s of every run is fixed** — model staging, text encode, VAE decode —
   and no step count touches it. That is 62 % of the turbo-4 run at 124 frames
   and a rounding error at 736, which is why the ratio improves with length.
@@ -499,21 +501,68 @@ prompt and seed, 864×480, 30.7 s, audio on:
 | RTX 5080, turbo 4-step | 736 | 203 s (50.8 s/step) | **312 s** (5 min 12 s) | 15 547 MiB |
 | RTX 5080, 20 steps + EasyCache | 736 | — | not measured (issue #2) | — |
 | RTX 5080, no acceleration (historical bound) | 736 | — | ≤ 46.9 min | — |
-| RTX PRO 6000 (96 GB), 20 steps + EasyCache | 736 | 286 s | 374 s (6 min 14 s) | — |
 
 Fixed cost is 109 s here against ~22 s at 124 frames — the VAE has 6× the
 frames to decode — but sampling is now 65 % of the run, so the step count is
 finally the thing worth cutting. A 30 s clip on the 16 GB card went from an
 "start it and go do something else" job to **5 minutes**, which is
-iterate-on-it territory, and it now lands **ahead of a 96 GB RTX PRO 6000
-running the 20-step template** — a card that holds every weight resident and
-never touches the disk mid-generation.
+iterate-on-it territory.
 
 The clip was checked end to end: coherent for the full 30.7 s, and audio at the
 same −14 dB mean as the baseline runs. It stays well clear of the length at
 which the model itself gives out — 61 s still holds, 89 s comes back as a
 uniform grey-brown surface regardless of VRAM (issue #14) — so turbo does not
 move that ceiling either way.
+
+<a id="turbo-on-96gb"></a>
+### The same matrix on 96 GB
+
+The 16 GB card cannot hold the 21 GB DiT, so it streams weights from NVMe
+throughout a generation. A rented RTX PRO 6000 (96 GB) holds everything
+resident, which makes it the control for every claim above. Same commit, same
+pins, same prompt, same seed 4301, idle GPU:
+
+| Frames | Sampling | Steps run | s/step | `Prompt executed in` | vs baseline | Peak VRAM |
+|---:|---|---:|---:|---:|---:|---:|
+| 124 | 20 steps + EasyCache | 13 of 20 | 1.54 s | 32.0 s | 1.00× | 41 905 MiB |
+| 124 | turbo 8-step | 8 | 1.55 s | 27.7 s | 1.16× | 42 733 MiB |
+| 124 | turbo 4-step | 4 | 1.55 s | **21.6 s** | **1.48×** | 42 733 MiB |
+| 736 | 20 steps + EasyCache | 12 of 20 | 23.42 s | 375.3 s | 1.00× | 51 280 MiB |
+| 736 | turbo 8-step | 8 | 23.47 s | 279.6 s | 1.34× | 51 053 MiB |
+| 736 | turbo 4-step | 4 | 23.49 s | **198.7 s** (3 min 19 s) | **1.89×** | 51 053 MiB |
+
+**The ~14 % that a LoRA step costs on the 5080 is not there at all here:**
+
+| | 16 GB, weights streamed | 96 GB, weights resident |
+|---|---:|---:|
+| baseline s/step, 124 frames | 3.15 s | 1.54 s |
+| turbo s/step, 124 frames | 3.60 s (**+14 %**) | 1.55 s (**+0.6 %**) |
+| baseline s/step, 736 frames | not measured | 23.42 s |
+| turbo s/step, 736 frames | 50.84 s | 23.49 s (**+0.3 %**) |
+
+So that penalty is a property of **weight streaming, not of the LoRA**: on a
+card that has to re-read the DiT every step, the patch is re-applied every time
+it lands; on a card that holds it, the patch is applied once and costs nothing
+after. Which also means the 1.80× / 1.89× gap between the two machines is not
+the LoRA behaving differently — it is the 16 GB card paying a tax the 96 GB card
+does not.
+
+For a 30.7 s clip, in wall-clock:
+
+| | `Prompt executed in` |
+|---|---:|
+| RTX PRO 6000, 20 steps + EasyCache | 375 s (6 min 15 s) |
+| RTX 5080, turbo 4-step | 312 s (5 min 12 s) |
+| RTX PRO 6000, turbo 4-step | **199 s (3 min 19 s)** |
+
+A 16 GB desktop card running 4 steps finishes a 30 s clip **faster than a 96 GB
+server card running twenty** — and renting the big card on top of that buys a
+further 1.6×, not the order of magnitude the price difference suggests.
+
+Reproducibility note: the pod's 736-frame baseline came in at 375.3 s against
+374.2 s measured there on ComfyUI v0.30.2 a day earlier, across a full venv
+rebuild and a version bump. The stack is stable enough that these numbers can
+be compared across sessions.
 
 **Unaccelerated history** — 21 generations, all 864×480 at 24 fps with audio,
 `res_multistep` / `simple` / 20 steps, **no acceleration nodes**:
