@@ -79,6 +79,10 @@ def main():
                         help="LLM sampling temperature (default: model default)")
     parser.add_argument("--ollama-server", default=prompt_gen.DEFAULT_SERVER,
                         help=f"Ollama base URL (default: {prompt_gen.DEFAULT_SERVER})")
+    parser.add_argument("--upload-always", action="store_true",
+                        help="upload the initial frame even when it sits under "
+                             "data/input; required when ComfyUI does not share "
+                             "this filesystem (e.g. a remote server)")
     parser.add_argument("--comfy-server", default=generate.DEFAULT_SERVER,
                         help=f"ComfyUI base URL (default: {generate.DEFAULT_SERVER})")
     parser.add_argument("--template", default=None,
@@ -143,7 +147,8 @@ def main():
     print(f"\n[2/2] generating video ({args.duration}s) ...", flush=True)
     generate.run(result["video_prompt"], args.duration, seed=seed,
                  server=args.comfy_server, template=args.template,
-                 image=args.image, timeout_s=args.timeout)
+                 image=args.image, timeout_s=args.timeout,
+                 always_upload=args.upload_always)
 
 
 if __name__ == "__main__":

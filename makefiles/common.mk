@@ -29,7 +29,7 @@ checkout: ## Fetch / update ComfyUI and KJNodes
 gen: | .env ## Headless video: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]
 	@test -n "$(PROMPT)" || { echo 'usage: make gen PROMPT="..." [IMAGE=path] [DURATION=5] [SEED=n]'; exit 1; }
 	python3 scripts/generate.py --prompt "$(PROMPT)" --duration "$(DURATION)" \
-		$(if $(IMAGE),--image "$(IMAGE)") \
+		$(if $(IMAGE),--image "$(IMAGE)") $(if $(UPLOAD_ALWAYS),--upload-always) \
 		$(if $(SEED),--seed "$(SEED)") --server "http://localhost:$(COMFY_PORT)"
 
 .PHONY: gen-t2v
@@ -46,6 +46,7 @@ gen-i2v: | .env ## Still + prompt -> Ollama -> video: make gen-i2v IMAGE=path [P
 	@test -n "$(IMAGE)" || { echo 'usage: make gen-i2v IMAGE=path [PROMPT="..."] [SPEECH=ja] [IMAGE_PROMPT="..."] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
 	python3 scripts/pipeline.py $(if $(PROMPT),"$(PROMPT)") --image "$(IMAGE)" \
 		--model "$(MODEL)" --duration "$(DURATION)" \
+		$(if $(UPLOAD_ALWAYS),--upload-always) \
 		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
 		$(if $(SPEECH),--speech "$(SPEECH)") \
 		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
@@ -55,7 +56,7 @@ gen-i2v: | .env ## Still + prompt -> Ollama -> video: make gen-i2v IMAGE=path [P
 pipeline: | .env ## Same, with the mode taken from IMAGE=: make pipeline THEME="..." [IMAGE=path] [SPEECH=ja] ...
 	@test -n "$(THEME)$(IMAGE)" || { echo 'usage: make pipeline THEME="..." [IMAGE=path] [IMAGE_PROMPT="..."] [SPEECH=ja] [MODEL=...] [DURATION=5] [SEED=n] [DRY_RUN=1]'; exit 1; }
 	python3 scripts/pipeline.py $(if $(THEME),"$(THEME)") --model "$(MODEL)" --duration "$(DURATION)" \
-		$(if $(IMAGE),--image "$(IMAGE)") \
+		$(if $(IMAGE),--image "$(IMAGE)") $(if $(UPLOAD_ALWAYS),--upload-always) \
 		$(if $(IMAGE_PROMPT),--image-prompt "$(IMAGE_PROMPT)") \
 		$(if $(SPEECH),--speech "$(SPEECH)") \
 		$(if $(SEED),--seed "$(SEED)") $(if $(DRY_RUN),--dry-run) \
