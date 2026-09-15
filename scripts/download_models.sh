@@ -17,6 +17,12 @@
 #   fp8_scaled   - Same size, fp8 tensor-core path. Interchangeable in practice.
 #   nvfp4_awq    - Text encoder. NVFP4 has no hardware path before Blackwell,
 #                  which is exactly what an RTX 5080 provides.
+#   turbo LoRAs  - Step-distillation LoRAs (TURBO=1, +3.9 GB). They let the
+#                  sampler run 4 or 8 steps instead of 20; see --turbo in
+#                  scripts/generate.py. Upstream is lightx2v/Minimax-h3-Turbo,
+#                  which carries newer 4-step revisions (v1.1, v1.2); these two
+#                  are the pair ComfyUI's own template ships with, so they are
+#                  the pair that has been tested against this node graph.
 
 set -euo pipefail
 
@@ -24,6 +30,7 @@ REPO="Comfy-Org/MiniMax-H3"
 MODELS_DIR="${MODELS_DIR:-/data/models}"
 DIT_VARIANT="${DIT_VARIANT:-int8_convrot}"   # int8_convrot | fp8_scaled
 TASKS="${TASKS:-fl2va}"                      # space separated: fl2va ref2va
+TURBO="${TURBO:-}"                           # non-empty: also fetch the LoRAs
 
 files=(
   "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
@@ -35,9 +42,21 @@ for task in $TASKS; do
   files+=("diffusion_models/minimax_h3_${task}_pruned_${DIT_VARIANT}.safetensors")
 done
 
+# Opt-in, like TASKS=ref2va: the base set generates on its own, and 3.9 GB is
+# not worth downloading for somebody who never asked for the fast path.
+# The 4-step file is named 768p and the 8-step is not, so the 4-step may well be
+# resolution-bound -- keep both until that is measured rather than assumed.
+if [[ -n "${TURBO}" ]]; then
+  files+=(
+    "loras/minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+    "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+  )
+fi
+
 echo "Repository : ${REPO}"
 echo "Destination: ${MODELS_DIR}"
 echo "Tasks      : ${TASKS} (pruned/${DIT_VARIANT})"
+echo "Turbo LoRAs: ${TURBO:-no}"
 echo
 echo "Requesting ${#files[@]} files:"
 printf '  %s\n' "${files[@]}"

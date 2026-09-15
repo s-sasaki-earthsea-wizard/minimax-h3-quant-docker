@@ -88,6 +88,16 @@ def main():
     parser.add_argument("--template", default=None,
                         help="API-format workflow template (default: the "
                              "accelerated t2v one, or i2v with --image)")
+    parser.add_argument("--megapixels", type=float, default=None,
+                        help="canvas size in megapixels (default: the "
+                             "template's 0.4). Lowering it is how a clip gets "
+                             "longer -- the model's budget is tokens, and "
+                             "tokens scale with pixels x frames")
+    parser.add_argument("--turbo", type=int, default=None,
+                        choices=sorted(generate.TURBO_LORAS),
+                        help="sample this many steps with a step-distillation "
+                             "LoRA instead of the template's 20 "
+                             "(needs: make models-turbo)")
     parser.add_argument("--timeout", type=int, default=3600,
                         help="max seconds to wait for the video (default: 3600)")
     parser.add_argument("--dry-run", action="store_true",
@@ -148,7 +158,8 @@ def main():
     generate.run(result["video_prompt"], args.duration, seed=seed,
                  server=args.comfy_server, template=args.template,
                  image=args.image, timeout_s=args.timeout,
-                 always_upload=args.upload_always)
+                 always_upload=args.upload_always, turbo=args.turbo,
+                 megapixels=args.megapixels)
 
 
 if __name__ == "__main__":

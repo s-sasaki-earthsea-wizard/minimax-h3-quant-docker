@@ -24,6 +24,11 @@ models-ref2va: | .env ## Additionally fetch the Ref2VA DiT (+21GB)
 	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
 		-e TASKS=ref2va --entrypoint bash comfyui /scripts/download_models.sh
 
+.PHONY: models-turbo
+models-turbo: | .env ## Additionally fetch the 4/8-step turbo LoRAs (+3.9GB)
+	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/scripts:/scripts:ro" \
+		-e TURBO=1 --entrypoint bash comfyui /scripts/download_models.sh
+
 .PHONY: up
 up: | .env ## Start ComfyUI (background)
 	$(COMPOSE) up -d

@@ -19,6 +19,9 @@ working if the template is re-exported with different ids:
   duration in seconds; the 17k+5 frame quantisation stays server-side
 - ``ResolutionSelector``     -> ``inputs.megapixels`` / ``inputs.aspect_ratio``
 - ``LoadImage``              -> ``inputs.image`` (i2v templates only)
+
+``--turbo`` rewrites the model chain rather than just an input: see
+``apply_turbo``.
 """
 
 import argparse
@@ -58,6 +61,24 @@ PROGRESS_EVERY_S = 60
 DIALOGUE_HINTS = ("dialogue", "speaks", "speaking", "says", "saying", "talks",
                   "talking", "conversation", "interview", "monologue",
                   "セリフ", "台詞", "話す", "喋", "発話")
+# Step-distillation LoRAs: the sampler runs this many steps instead of 20.
+# Fetch them with `make models-turbo` (+3.9 GB, opt-in).
+#
+# These settings are not guesses -- ComfyUI's own bundled template
+# (video_minimax_h3_t2v.json, since v0.35.0) carries the same turbo path behind
+# an "Enable Lightning LoRA" switch, and it changes exactly three things:
+# LoraLoaderModelOnly at strength 1.0 in front of the sampler, BasicScheduler
+# steps, and nothing else. Scheduler stays "simple", sampler stays
+# res_multistep, and BasicGuider is already CFG-free, which is what a distilled
+# model wants.
+TURBO_LORAS = {
+    4: "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+    8: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+}
+TURBO_LORA_STRENGTH = 1.0
+# Node ids in the templates are numeric strings ("105:6"), so a word cannot
+# collide with one.
+TURBO_LORA_NODE_ID = "turbo_lora"
 
 
 def find_nodes(workflow, class_type):
@@ -219,6 +240,68 @@ def apply_parameters(workflow, prompt, duration_s, seed,
     return workflow
 
 
+def _relink(workflow, old_ref, new_ref, skip=()):
+    """Point every input reading old_ref at new_ref instead.
+
+    Args:
+        workflow: API-format workflow dict, modified in place.
+        old_ref: [node_id, slot] to redirect away from.
+        new_ref: [node_id, slot] to redirect to.
+        skip: node ids to leave alone, so a node inserted into the middle of a
+            link does not end up wired to itself.
+    """
+    old = list(old_ref)
+    for node_id, node in workflow.items():
+        if node_id in skip:
+            continue
+        for key, value in node.get("inputs", {}).items():
+            if isinstance(value, list) and len(value) == 2 and list(value) == old:
+                node["inputs"][key] = list(new_ref)
+
+
+def apply_turbo(workflow, steps):
+    """Switch the workflow to a step-distillation LoRA at `steps` steps.
+
+    Three edits, mirroring ComfyUI's bundled template:
+
+    1. LoraLoaderModelOnly goes in immediately after UNETLoader, so everything
+       downstream -- the SageAttention patch, the scheduler, the guider --
+       reads the patched model.
+    2. BasicScheduler.steps becomes 4 or 8.
+    3. EasyCache comes out. It skips steps whose output barely moves, which is
+       a sound bet across 20 steps and a bad one across 4: a distilled schedule
+       has nothing left to skip, and dropping one step in four would cost real
+       signal. The accelerated templates are the ones that carry it; against a
+       baseline template this is a no-op.
+
+    The SageAttention patch stays: it swaps the attention kernel, which is
+    orthogonal to how many steps the sampler takes.
+    """
+    if steps not in TURBO_LORAS:
+        sys.exit(f"error: --turbo takes {'/'.join(map(str, sorted(TURBO_LORAS)))}"
+                 f", not {steps}")
+
+    unet_id, _ = find_single(workflow, "UNETLoader")
+    _relink(workflow, [unet_id, 0], [TURBO_LORA_NODE_ID, 0])
+    workflow[TURBO_LORA_NODE_ID] = {
+        "inputs": {
+            "model": [unet_id, 0],
+            "lora_name": TURBO_LORAS[steps],
+            "strength_model": TURBO_LORA_STRENGTH,
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {"title": f"Turbo LoRA ({steps} step)"},
+    }
+
+    for node_id, node in find_nodes(workflow, "EasyCache"):
+        _relink(workflow, [node_id, 0], node["inputs"]["model"])
+        del workflow[node_id]
+
+    _, scheduler = find_single(workflow, "BasicScheduler")
+    scheduler["inputs"]["steps"] = steps
+    return workflow
+
+
 def _request_json(url, payload=None, timeout=30):
     """POST payload (or GET when None) and decode the JSON response."""
     data = json.dumps(payload).encode() if payload is not None else None
@@ -308,13 +391,15 @@ def warn_if_speech_unwritten(prompt):
 
 def run(prompt, duration_s, seed=None, server=DEFAULT_SERVER,
         template=None, megapixels=None, aspect_ratio=None, image=None,
-        timeout_s=3600, wait=True, always_upload=False):
+        timeout_s=3600, wait=True, always_upload=False, turbo=None):
     """Submit one generation job and (optionally) wait for its outputs.
 
     Args:
         image: optional initial frame; selects the i2v template unless
             template says otherwise, and sets the canvas aspect ratio unless
             aspect_ratio says otherwise.
+        turbo: 4 or 8 to sample that many steps with a step-distillation LoRA
+            instead of the template's 20.
 
     Returns:
         (prompt_id, output_paths). output_paths is empty when wait=False.
@@ -329,10 +414,13 @@ def run(prompt, duration_s, seed=None, server=DEFAULT_SERVER,
             aspect_ratio = aspect_for_image(image)
     apply_parameters(workflow, prompt, duration_s, seed,
                      megapixels, aspect_ratio, image_name)
+    if turbo is not None:
+        apply_turbo(workflow, turbo)
 
     prompt_id = submit(workflow, server)
     print(f"submitted: prompt_id={prompt_id} seed={seed} "
-          f"duration={duration_s}s", flush=True)
+          f"duration={duration_s}s"
+          + (f" turbo={turbo}step" if turbo is not None else ""), flush=True)
     if not wait:
         return prompt_id, []
 
@@ -370,6 +458,11 @@ def main():
     parser.add_argument("--template", default=None,
                         help="API-format workflow template (default: the "
                              "accelerated t2v one, or i2v with --image)")
+    parser.add_argument("--turbo", type=int, default=None,
+                        choices=sorted(TURBO_LORAS),
+                        help="sample this many steps with a step-distillation "
+                             "LoRA instead of the template's 20, and drop "
+                             "EasyCache (needs: make models-turbo)")
     parser.add_argument("--timeout", type=int, default=3600,
                         help="max seconds to wait for completion (default: 3600)")
     parser.add_argument("--no-wait", action="store_true",
@@ -399,6 +492,8 @@ def main():
                 aspect = aspect_for_image(args.image)
         apply_parameters(workflow, prompt, args.duration, seed,
                          args.megapixels, aspect, image_name)
+        if args.turbo is not None:
+            apply_turbo(workflow, args.turbo)
         json.dump(workflow, sys.stdout, indent=2, ensure_ascii=False)
         print()
         return
@@ -406,7 +501,8 @@ def main():
     run(prompt, args.duration, seed=args.seed, server=args.server,
         template=args.template, megapixels=args.megapixels,
         aspect_ratio=args.aspect, image=args.image, timeout_s=args.timeout,
-        wait=not args.no_wait, always_upload=args.upload_always)
+        wait=not args.no_wait, always_upload=args.upload_always,
+        turbo=args.turbo)
 
 
 if __name__ == "__main__":
